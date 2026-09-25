@@ -5,8 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test-support.js";
 
 const fixture = vi.hoisted(() => ({ root: "", spawn: vi.fn() }));
-vi.mock("../utils.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../utils.js")>()),
+vi.mock("openclaw/plugin-sdk/text-utility-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/text-utility-runtime")>()),
   get CONFIG_DIR() {
     return fixture.root;
   },
@@ -17,7 +17,10 @@ vi.mock("./paths.js", async (importOriginal) => ({
     return path.join(fixture.root, "downloads");
   },
 }));
-vi.mock("../infra/ports.js", () => ({ ensurePortAvailable: async () => {} }));
+vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
+  ensurePortAvailable: async () => {},
+}));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: fixture.spawn,

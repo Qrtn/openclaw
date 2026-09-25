@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { withFileLock } from "openclaw/plugin-sdk/file-lock";
-import { CONFIG_DIR } from "../utils.js";
+import { CONFIG_DIR } from "openclaw/plugin-sdk/text-utility-runtime";
 
 const operationOwners = new AsyncLocalStorage<ReadonlyMap<string, string>>();
 

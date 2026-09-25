@@ -16,8 +16,8 @@ const fixture = vi.hoisted(() => ({
   diagnose: vi.fn(),
   trash: vi.fn(),
 }));
-vi.mock("../utils.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../utils.js")>()),
+vi.mock("openclaw/plugin-sdk/text-utility-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/text-utility-runtime")>()),
   get CONFIG_DIR() {
     return fixture.root;
   },
@@ -39,7 +39,10 @@ vi.mock("./paths.js", async (importOriginal) => ({
     return path.join(fixture.root, "downloads");
   },
 }));
-vi.mock("../infra/ports.js", () => ({ ensurePortAvailable: fixture.portProbe }));
+vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
+  ensurePortAvailable: fixture.portProbe,
+}));
 vi.mock("./trash.js", () => ({ movePathToTrash: fixture.trash }));
 vi.mock("openclaw/plugin-sdk/file-lock", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/file-lock")>();
