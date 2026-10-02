@@ -104,7 +104,7 @@ describe("reply reset with a native session worktree", () => {
           cwd: retained?.spawnedCwd,
         }),
       ).toBe(runWorkspace);
-      const placement = resolveWorkerPlacementSessionTarget({
+      const placement = await resolveWorkerPlacementSessionTarget({
         sessionRuntime: {
           resolveGatewaySessionStoreTargetWithStore,
           resolveCanonicalSessionEntryFromStoreKeys,
@@ -116,6 +116,7 @@ describe("reply reset with a native session worktree", () => {
         agentId: "main",
         errorMessage: "Reset detached the session workspace",
       });
+      placement.assertCurrent(cfg);
       expect(placement.workspace).toEqual({ kind: "local", path: native.path });
       expect(managedWorktrees.findLiveByOwner("session", sessionKey)).toEqual(native);
       expect(await fs.readFile(file, "utf8")).toBe("keep unfinished work\n");
