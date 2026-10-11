@@ -104,7 +104,7 @@ it("adopts active steering through prepared policy without caller-thread SQL", a
           // The optional restart-recovery store read is separate from moved tool-policy work.
           touchActiveSessionEntry: async () => {},
           typing,
-          typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
+          typingSignals: createTypingSignaler({ typing, mode: "never" }),
         }),
       ).resolves.toBe("handled");
       expect(delivered).toEqual([run.prompt]);
@@ -257,7 +257,7 @@ it.for(
         storePath,
         touchActiveSessionEntry: async () => {},
         typing,
-        typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
+        typingSignals: createTypingSignaler({ typing, mode: "never" }),
       });
       const settlement = outcome.then(
         () => {},

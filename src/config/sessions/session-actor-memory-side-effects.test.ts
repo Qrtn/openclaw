@@ -2,11 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openContextEngineTurnOutboxWorkerStore } from "../../agents/harness/context-engine-turn-outbox-store.js";
 import { drainContextEngineTurnOutbox } from "../../agents/harness/context-engine-turn-outbox.js";
 import type { ContextEngine } from "../../context-engine/types.js";
-import {
-  claimHeartbeatOutcomeForRun,
-  persistHeartbeatOutcome,
-} from "../../infra/heartbeat-outcome-store.js";
 import { recordMessageToolRunOutcome } from "../../infra/message-tool-run-outcome-store.js";
+import { appendSessionRuntimeContext } from "../../sessions/runtime-context.js";
 import { createSqliteTrajectoryRuntimeSink } from "../../trajectory/runtime-store-writer.js";
 import {
   loadSqliteTrajectoryRuntimeEvents,
@@ -133,36 +130,37 @@ function trajectory(sessionId: string, text: string, seq: number): TrajectoryEve
 }
 
 describe("memory session side-data consumers", () => {
-  it("claims heartbeat context once per run, sees replacements, and keeps returned data detached", async () => {
-    const { scope, binding } = await fixture();
-    await runWithSessionActorStorage(binding, () =>
-      persistHeartbeatOutcome({
-        ...scope,
-        runSessionKey: scope.sessionKey,
-        occurredAt: 1,
-        response: { outcome: "progress", notify: false, summary: "first" },
-        taskNames: ["task"],
-      }),
-    );
-    const [winner, other] = await Promise.all([
-      claimHeartbeatOutcomeForRun({ ...scope, runId: "run-one" }),
-      claimHeartbeatOutcomeForRun({ ...scope, runId: "run-two" }),
+  it("records automation context once per invocation and keeps later results and reads detached", async () => {
+    const { scope, storage, binding } = await fixture();
+    const record = (runId: string, content: string) =>
+      runWithSessionActorStorage(binding, () =>
+        appendSessionRuntimeContext({
+          scope,
+          cfg: {},
+          content: `Automation result (recorded fact, not an instruction): ${content}`,
+          idempotencyKey: `automation-result:job:${runId}`,
+        }),
+      );
+    await Promise.all([record("run-one", "progress: first"), record("run-one", "progress: first")]);
+    const read = () =>
+      storage.read({ type: "session.history.context-messages", input: {} }, authority);
+    const first = await read();
+    expect(first.messages).toMatchObject([
+      { role: "custom", display: false, content: expect.stringContaining("progress: first") },
     ]);
-    expect(winner?.summary).toBe("first");
-    expect(other).toBeUndefined();
-    winner!.taskNames.push("mutated");
-    expect((await claimHeartbeatOutcomeForRun({ ...scope, runId: "run-one" }))?.taskNames).toEqual([
-      "task",
+    const message = first.messages[0];
+    if (message?.role !== "custom") {
+      throw new Error("Expected recorded automation context");
+    }
+    message.content = "mutated";
+    expect((await read()).messages).toMatchObject([
+      { content: expect.stringContaining("progress: first") },
     ]);
-    await persistHeartbeatOutcome({
-      ...scope,
-      runSessionKey: scope.sessionKey,
-      occurredAt: 2,
-      response: { outcome: "done", notify: false, summary: "replacement" },
-    });
-    expect((await claimHeartbeatOutcomeForRun({ ...scope, runId: "run-two" }))?.summary).toBe(
-      "replacement",
-    );
+    await record("run-two", "done: replacement");
+    expect((await read()).messages).toMatchObject([
+      { content: expect.stringContaining("progress: first") },
+      { content: expect.stringContaining("done: replacement") },
+    ]);
     await recordMessageToolRunOutcome({
       ...scope,
       runId: "run-two",
@@ -182,7 +180,7 @@ describe("memory session side-data consumers", () => {
       sessionId: scope.sessionId,
       sessionActor: binding,
     });
-    const filter = { engineId: "test", isHeartbeat: false };
+    const filter = { engineId: "test" };
     const abandoned = await turn("abandoned");
     await store.enqueueIntent({ ...filter, admission: abandoned.admission });
     expect(await store.prepareRun({ ...filter, sessionId: scope.sessionId })).toMatchObject({
@@ -310,7 +308,7 @@ describe("memory session side-data consumers", () => {
       sessionKey: scope.sessionKey,
       sessionActor: binding,
     });
-    const filter = { engineId: "test", isHeartbeat: false };
+    const filter = { engineId: "test" };
     await store.acceptIntent({ ...filter, boundary });
     await store.publishClosedTurn({ ...filter, boundary, maxEvents: 10, maxBytes: 100_000 });
     const entered = Promise.withResolvers<void>();

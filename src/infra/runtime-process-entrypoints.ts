@@ -55,7 +55,6 @@ export const runtimeProcessEntrypoints = {
     "config/sessions/session-message-rewrite.worker",
   ),
   sessionDiskBudget: runtimeProcessEntrypoint("config/sessions/disk-budget.worker"),
-  heartbeatOutcomeStore: runtimeProcessEntrypoint("infra/heartbeat-outcome-store.worker"),
   acpParentStreamStore: runtimeProcessEntrypoint(
     "agents/subagents/spawn/acp-parent-stream-store.worker",
   ),

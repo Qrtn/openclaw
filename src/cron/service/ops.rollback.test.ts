@@ -173,29 +173,21 @@ describe("cron service ops persist rollback", () => {
       malformed.state.nextRunAtMs = undefined;
       malformed.state.scheduleErrorCount = 2;
       await writeCronStoreSnapshot({ storePath, jobs: state.store?.jobs ?? [] });
-      const enqueueSystemEvent = vi.mocked(state.deps.enqueueSystemEvent);
-      const requestHeartbeat = vi.mocked(state.deps.requestHeartbeat);
       const order: string[] = [];
-      enqueueSystemEvent.mockClear();
-      requestHeartbeat.mockClear();
-      enqueueSystemEvent.mockImplementation(() => {
+      const enqueueSessionEvent = vi.fn(() => {
         order.push("notify");
       });
-      requestHeartbeat.mockImplementation(() => {
-        order.push("heartbeat");
-      });
+      state.deps.enqueueSessionEvent = enqueueSessionEvent;
       const trigger = () => add(state, makeCreateInput(`trigger ${triggerPath}`));
       await withCronJobWriteFailure(storePath, async () => {
         await expect(trigger()).rejects.toThrow("disk full");
       });
 
       expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(true);
-      expect(enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(requestHeartbeat).not.toHaveBeenCalled();
+      expect(enqueueSessionEvent).not.toHaveBeenCalled();
 
       const stopObserving = observeCronStoreCommits(storePath, () => {
-        expect(enqueueSystemEvent).not.toHaveBeenCalled();
-        expect(requestHeartbeat).not.toHaveBeenCalled();
+        expect(enqueueSessionEvent).not.toHaveBeenCalled();
         const persisted = openOpenClawStateDatabase()
           .db.prepare("SELECT enabled FROM cron_jobs WHERE store_key = ? AND job_id = ?")
           .get(cronStoreKey(storePath), malformed.id);
@@ -209,9 +201,8 @@ describe("cron service ops persist rollback", () => {
       }
 
       expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(false);
-      expect(order).toEqual(["persist", "notify", "heartbeat"]);
-      expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
-      expect(requestHeartbeat).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["persist", "notify"]);
+      expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -244,13 +235,10 @@ describe("cron service ops persist rollback", () => {
       malformed.state.nextRunAtMs = undefined;
       malformed.state.scheduleErrorCount = 2;
       await writeCronStoreSnapshot({ storePath, jobs: state.store?.jobs ?? [] });
-      const enqueueSystemEvent = vi.mocked(state.deps.enqueueSystemEvent);
-      const requestHeartbeat = vi.mocked(state.deps.requestHeartbeat);
-      enqueueSystemEvent.mockClear();
-      requestHeartbeat.mockClear();
+      const enqueueSessionEvent = vi.fn();
+      state.deps.enqueueSessionEvent = enqueueSessionEvent;
       const commit = vi.fn(async () => {
-        expect(enqueueSystemEvent).not.toHaveBeenCalled();
-        expect(requestHeartbeat).not.toHaveBeenCalled();
+        expect(enqueueSessionEvent).not.toHaveBeenCalled();
         const persisted = await loadCronStore(storePath);
         expect(persisted.jobs.find((job) => job.id === removed.id)?.agentId).toBe("doomed");
         expect(persisted.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(true);
@@ -284,8 +272,7 @@ describe("cron service ops persist rollback", () => {
           true,
         );
         expect(readCronJobScratchState(storePath, removed.id)).toEqual(scratchBefore);
-        expect(enqueueSystemEvent).not.toHaveBeenCalled();
-        expect(requestHeartbeat).not.toHaveBeenCalled();
+        expect(enqueueSessionEvent).not.toHaveBeenCalled();
       }
       const transaction = removeAgentJobsTransactional(state, "doomed", commit);
       if (outcome === "committed") {
@@ -300,8 +287,7 @@ describe("cron service ops persist rollback", () => {
       expect(scratchWrites.counts.deletes).toBe(0);
       const notificationCount = rolledBack ? 0 : 1;
       expect(commit).toHaveBeenCalledTimes(outcome === "failed" ? 1 : 2);
-      expect(enqueueSystemEvent).toHaveBeenCalledTimes(notificationCount);
-      expect(requestHeartbeat).toHaveBeenCalledTimes(notificationCount);
+      expect(enqueueSessionEvent).toHaveBeenCalledTimes(notificationCount);
       expect(state.store?.jobs.some((job) => job.id === removed.id)).toBe(rolledBack);
       expect(state.store?.jobs.find((job) => job.id === malformed.id)?.enabled).toBe(rolledBack);
       const persisted = await loadCronStore(storePath);
@@ -336,10 +322,8 @@ describe("cron service ops persist rollback", () => {
     const persistedBefore = structuredClone(
       (await loadCronStore(storePath)).jobs.find((entry) => entry.id === job.id),
     );
-    const enqueueSystemEvent = vi.mocked(state.deps.enqueueSystemEvent);
-    const requestHeartbeat = vi.mocked(state.deps.requestHeartbeat);
-    enqueueSystemEvent.mockClear();
-    requestHeartbeat.mockClear();
+    const enqueueSessionEvent = vi.fn();
+    state.deps.enqueueSessionEvent = enqueueSessionEvent;
     const computeSpy = vi.spyOn(cronSchedule, "computeNextRunAtMs").mockImplementation(() => {
       throw new Error("simulated preflight schedule failure");
     });
@@ -354,8 +338,7 @@ describe("cron service ops persist rollback", () => {
       expect((await loadCronStore(storePath)).jobs.find((entry) => entry.id === job.id)).toEqual(
         persistedBefore,
       );
-      expect(enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(requestHeartbeat).not.toHaveBeenCalled();
+      expect(enqueueSessionEvent).not.toHaveBeenCalled();
     } finally {
       computeSpy.mockRestore();
     }

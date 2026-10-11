@@ -408,6 +408,7 @@ export function createCronPromptExecutor(
             finalizePromptForResolvedTools,
             model: modelOverride,
             thinkLevel: candidateThinkLevel,
+            reasoningLevel: params.agentPayload?.includeReasoning ? "on" : undefined,
             timeoutMs: params.timeoutMs,
             runId,
             lane: resolveCronAgentLane(params.lane),
@@ -615,7 +616,9 @@ export function createCronPromptExecutor(
           allowTransientCooldownProbe: runOptions.allowTransientCooldownProbe,
           assistantErrorTranscript: runOptions.assistantErrorTranscript,
           abortSignal: params.abortSignal,
-          onLaneWait: params.onLaneWait,
+          onLaneWait: params.onLaneWait
+            ? (info) => params.onLaneWait?.({ ...info, stage: "execution" })
+            : undefined,
         });
         bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
           result.meta?.systemPromptReport,

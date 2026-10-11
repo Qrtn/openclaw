@@ -19,6 +19,7 @@ import {
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
   NODE_WORKER_WORKSPACE_EXEC_COMMAND,
 } from "../../../../src/infra/node-commands.js";
+import { redactSensitiveText } from "../../../../src/logging/redact.js";
 import { prepareNodeHostRuntime } from "../../../../src/node-host/runtime.js";
 import { writeSkill } from "../../../../src/skills/test-support/e2e-test-helpers.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../../../src/state/openclaw-agent-db-readonly.js";
@@ -308,6 +309,7 @@ it.skipIf(process.platform === "win32")(
         }
         expect(gateway.runtimeEnv.REQUIRED_NATIVE_KEY).toBeUndefined();
         expect(gateway.runtimeEnv.OPENAI_API_KEY).toBeUndefined();
+        record("auth-profile-checks-complete", {});
         operator = await connectWireClient({
           gateway,
           role: "operator",
@@ -325,6 +327,7 @@ it.skipIf(process.platform === "win32")(
         expect(await operator.request("sessions.subscribe", {})).toMatchObject({
           subscribed: true,
         });
+        record("operator-connected", {});
         // Node and Gateway have independent agent rosters; the configured path maps qa to node main.
         const nodeConfig = validateConfigObject({
           agents: { entries: { main: { workspace: remoteAgentWorkspace } } },
@@ -334,6 +337,7 @@ it.skipIf(process.platform === "win32")(
           throw new Error(JSON.stringify(nodeConfig.issues));
         }
         expect(Object.keys(nodeConfig.config.agents?.entries ?? {})).toEqual(["main"]);
+        record("node-runtime-preparation-start", {});
         const pluginRuntime = await prepareNodeHostRuntime({
           config: nodeConfig.config,
           env: {
@@ -343,6 +347,7 @@ it.skipIf(process.platform === "win32")(
           },
           commands: ["workspace.skills", "workspace.memory", "file.stat", "file.fetch", "dir.list"],
         });
+        record("node-runtime-preparation-complete", {});
         expect(pluginRuntime.manifest.commands).toContain("workspace.skills");
         node = await createPairedNodeWorkerHost({
           pluginRuntime,
@@ -362,6 +367,7 @@ it.skipIf(process.platform === "win32")(
           },
         });
         expect(node.identity.deviceId).toBe(identity.deviceId);
+        record("node-connected", {});
         const describe = async (key: string) =>
           (await operator!.request<{ session: Session }>("sessions.describe", { key })).session;
         const history = (key: string) =>
@@ -387,7 +393,11 @@ it.skipIf(process.platform === "win32")(
                     .filter((line) => /workspace|skills|not allowed|POLICY_DENIED/i.test(line))
                     .join("\n"),
                 );
-                observationFailure.reject(new Error("agent.wait: " + JSON.stringify(result)));
+                observationFailure.reject(
+                  new Error(
+                    `agent.wait: ${JSON.stringify(result)}\n${redactSensitiveText(gateway.logs(), { mode: "tools" }).slice(-12_000)}`,
+                  ),
+                );
               }
               return result;
             });
@@ -417,7 +427,7 @@ it.skipIf(process.platform === "win32")(
             );
           }
           let retained: ReturnType<typeof readSettlement>["placement"];
-          for (const timing of ["after-agent-wait", "during-workspace-finish"] as const) {
+          for (const timing of ["after-workspace-clear", "during-workspace-finish"] as const) {
             const markers = {
               A: "REQUIRED-NATIVE-" + pair + "-A",
               B: "REQUIRED-NATIVE-" + pair + "-B",
@@ -433,7 +443,9 @@ it.skipIf(process.platform === "win32")(
             barriers.push(continueQuiesce, continueResume);
             let aClaim: string | undefined;
             let aRun: string | undefined;
+            let bClaim: string | undefined;
             let bRun: string | undefined;
+            let sawBPending = false;
             let sawPending = false;
             let finishReleased = false;
             let sawClear = false;
@@ -469,9 +481,13 @@ it.skipIf(process.platform === "win32")(
                 record("sessions.changed-clear", { creation, timing });
                 changedClear.resolve();
               }
-              if (bRun && placement?.state === "active" && !placement.workspaceResultReconciling) {
+              if (
+                sawBPending &&
+                placement?.state === "active" &&
+                !placement.workspaceResultReconciling
+              ) {
                 const settled = readSettlement(gateway, key);
-                if (settled.placement?.turn_claim_id === null && !settled.pending) {
+                if (!settled.pending && settled.placement?.turn_claim_id === null) {
                   bChangedClear.resolve();
                 }
               }
@@ -492,6 +508,22 @@ it.skipIf(process.platform === "win32")(
               if (input.sessionId !== readSettlement(gateway, key).placement?.session_id) {
                 return;
               }
+              if (bRun && input.argv[2] === REMOTE_WORKSPACE_QUIESCE_JS) {
+                const state = readSettlement(gateway, key);
+                expect(state.pending).toMatchObject({
+                  session_id: input.sessionId,
+                  claim_id: bClaim,
+                  run_id: bRun,
+                  workspace_accepted_at_ms: null,
+                  staged_result_ref: null,
+                });
+                expect(state.placement).toMatchObject({
+                  turn_claim_id: bClaim,
+                  turn_claim_run_id: bRun,
+                });
+                sawBPending = true;
+                record("B-finishing-ACK-pending", { creation, timing, state });
+              }
               if (!quiesced && input.argv[2] === REMOTE_WORKSPACE_QUIESCE_JS) {
                 quiesced = true;
                 const state = readSettlement(gateway, key);
@@ -510,7 +542,26 @@ it.skipIf(process.platform === "win32")(
                   .map((item) => parseNodeWorkerLaunchInput(item.paramsJSON))
                   .findLast((item) => item.descriptor.assignment.runId === aRun)!;
                 expect(launch.descriptor.assignment.inference).toBe("runtime-local");
-                expect(await host.supervisor.status(launch.launchId)).toMatchObject({
+                const receipt = await host.supervisor.status(launch.launchId);
+                const failureDetail =
+                  receipt?.state === "completed" && receipt.runId === aRun
+                    ? undefined
+                    : redactSensitiveText(
+                        JSON.stringify({
+                          boundary: "native-terminal-before-workspace-quiescence",
+                          elapsedMs: Date.now() - startedAt,
+                          receipt,
+                          nativeRequests: requests,
+                          recentCommands: host.frames.slice(-20).map((item) => item.command),
+                          gatewayErrors: redactSensitiveText(gateway.logs(), { mode: "tools" })
+                            .split("\n")
+                            .filter((line) => /worker|cancel|abort|timed out/i.test(line))
+                            .slice(-12)
+                            .map((line) => line.slice(0, 2048)),
+                        }),
+                        { mode: "tools" },
+                      );
+                expect(receipt, failureDetail).toMatchObject({
                   state: "completed",
                   runId: aRun,
                 });
@@ -543,11 +594,16 @@ it.skipIf(process.platform === "win32")(
               if (retained) {
                 expect(state.placement?.environment_id).toBe(retained.environment_id);
               }
+              bClaim = state.placement?.turn_claim_id ?? undefined;
               bRun = state.placement?.turn_claim_run_id ?? undefined;
+              expect(bClaim).toBeTruthy();
               expect(bRun).toBeTruthy();
               record("B-after-A-atomic-clear", { admittedRunId: markers.B, ...state });
               bEntered.resolve();
             };
+            if (pair === 1) {
+              record("first-send", {});
+            }
             await send(key, markers.A);
             const aWait = wait(markers.A);
             await checkpoint(
@@ -576,6 +632,7 @@ it.skipIf(process.platform === "win32")(
             expect(
               committed.messages.some((message) => wireMessageText(message) === markers.A),
             ).toBe(true);
+            expect(readSettlement(gateway, key).pending?.claim_id).toBe(aClaim);
             const placed = readSettlement(gateway, key).placement!;
             if (retained) {
               expect(placed.session_id).toBe(retained.session_id);
@@ -601,7 +658,11 @@ it.skipIf(process.platform === "win32")(
               const pendingInput = readPendingInput(gateway, key, markers.B);
               expect(pendingInput).toMatchObject({
                 found: true,
-                value: { state: "queued", session_id: placed.session_id, run_id: markers.B },
+                value: {
+                  state: "queued",
+                  session_id: placed.session_id,
+                  run_id: markers.B,
+                },
               });
               const pendingHistory = (await history(key)).pendingInputs;
               record("B-public-pending-input", {
@@ -622,10 +683,11 @@ it.skipIf(process.platform === "win32")(
             }
             continueQuiesce.resolve();
             await checkpoint(atResume.promise, "A never accepted its unchanged workspace result");
+            expect(readSettlement(gateway, key).placement?.turn_claim_id).toBe(aClaim);
             finishReleased = true;
             continueResume.resolve();
             await checkpoint(changedClear.promise, "settled placement never published clear");
-            if (timing === "after-agent-wait") {
+            if (timing === "after-workspace-clear") {
               const settled = readSettlement(gateway, key);
               expect(settled.pending).toBeUndefined();
               expect(settled.placement?.turn_claim_id).toBeNull();

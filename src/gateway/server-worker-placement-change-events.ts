@@ -1,7 +1,10 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import { emitSessionsChanged } from "./server-methods/session-change-event.js";
 import type { WorkerPlacementRunnerAvailabilityReader } from "./worker-environments/placement-projector.js";
-import type { WorkerSessionPlacementChangeSnapshot } from "./worker-environments/placement-record.js";
+import type {
+  WorkerSessionPlacementChangeSnapshot,
+  WorkerSessionTurnClaim,
+} from "./worker-environments/placement-record.js";
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import type { WorkerEnvironmentService } from "./worker-environments/service.js";
 
@@ -84,7 +87,10 @@ export function createGatewayWorkerPlacementChangePublisher(params: {
 }
 
 export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
-  placements: Pick<WorkerSessionPlacementStore, "readChangeSnapshot" | "readProjection">;
+  placements: Pick<
+    WorkerSessionPlacementStore,
+    "readChangeSnapshot" | "readProjection" | "registerTurnClaimClosedHandler"
+  >;
   environments: Pick<WorkerEnvironmentService, "subscribeMachineShapeChanged">;
   runnerAvailability: WorkerPlacementRunnerAvailabilityReader;
   getSessionChangeContext?: () => Parameters<typeof emitSessionsChanged>[0] | undefined;
@@ -92,6 +98,7 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
 }) {
   const profiles = new Set<string>();
   const nodes = new Set<string>();
+  const closedClaims = new Map<string, WorkerSessionTurnClaim>();
   let stopped = false;
   let pending: Promise<void> | undefined;
   const schedule = () => {
@@ -104,11 +111,13 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
     // Catalog creation, machine options, and OS discovery can publish together.
     pending = Promise.resolve().then(async () => {
       try {
-        while (profiles.size || nodes.size) {
+        while (profiles.size || nodes.size || closedClaims.size) {
           const batch = [...profiles];
           const changedNodes = new Set(nodes);
+          const claims = new Map(closedClaims);
           profiles.clear();
           nodes.clear();
+          closedClaims.clear();
           try {
             const placements = new Map(
               (batch.length ? await params.placements.readChangeSnapshot(batch) : []).map(
@@ -127,6 +136,26 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
                   projection.environments.get(placement.environmentId ?? "") ?? null,
                 );
                 if (runner?.deviceId && changedNodes.has(runner.deviceId)) {
+                  placements.set(placement.sessionId, placement);
+                }
+              }
+            }
+            if (claims.size) {
+              const projection = await params.placements.readProjection([...claims.keys()], {
+                current: true,
+              });
+              for (const claim of claims.values()) {
+                const placement = projection.placements.get(claim.sessionId);
+                if (
+                  placement &&
+                  (placement.generation === claim.placementGeneration ||
+                    // Draining preserves the admitted claim across one transition.
+                    (placement.state === "draining" &&
+                      placement.generation === claim.placementGeneration + 1)) &&
+                  placement.environmentId === (claim.owner.environmentId ?? null) &&
+                  placement.activeOwnerEpoch === (claim.owner.ownerEpoch ?? null) &&
+                  !placement.turnClaim
+                ) {
                   placements.set(placement.sessionId, placement);
                 }
               }
@@ -166,6 +195,13 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
     profiles.add(profileId);
     schedule();
   });
+  const unsubscribeClaims = params.placements.registerTurnClaimClosedHandler((claim) => {
+    if (stopped) {
+      return;
+    }
+    closedClaims.set(claim.sessionId, structuredClone(claim));
+    schedule();
+  });
   return {
     runnerChanged(nodeId: string) {
       if (stopped) {
@@ -178,7 +214,9 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
       stopped = true;
       profiles.clear();
       nodes.clear();
+      closedClaims.clear();
       unsubscribe();
+      unsubscribeClaims();
       await pending;
     },
   };

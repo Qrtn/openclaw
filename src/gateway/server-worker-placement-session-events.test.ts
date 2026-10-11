@@ -127,6 +127,7 @@ describe("worker placement session events", () => {
       getCommittedRuntimeConfig: getRuntimeConfig,
       cancelSessionWork: vi.fn(async () => {}),
       placements: {
+        registerTurnClaimClosedHandler: () => () => {},
         workspaceResultInstanceId: () => "gateway-test",
         getAsync: async () => undefined,
         getManyAsync: async () => new Map(),

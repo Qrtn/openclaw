@@ -66,6 +66,7 @@ afterEach(async () => {
     ...instances.splice(0).map((instance) => instance.cleanup()),
     ...modelServers.splice(0).map((server) => server.close()),
   ]);
+  clearRuntimeConfigSnapshot();
   const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   clearRuntimeConfigSnapshot();
   if (errors.length > 0) {
@@ -656,7 +657,6 @@ function createTestConfig(baseUrl: string): OpenClawConfig {
       ownership: "explicit",
       entries: { [OTHER_AGENT_ID]: {}, [REQUESTER_AGENT_ID]: {} },
       defaults: {
-        heartbeat: { every: "0m" },
         maxConcurrent: 8,
         model: { primary: MODEL_REF },
         models: { [MODEL_REF]: { agentRuntime: { id: "openclaw" } } },

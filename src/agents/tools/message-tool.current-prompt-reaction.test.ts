@@ -153,7 +153,6 @@ describe("admitted WebChat prompt reactions", () => {
         opts: {
           dashboardReadAdmission: { ...scope, runId, assertCurrent: run.assertSourceCurrent },
         },
-        isHeartbeat: false,
       },
       executionRunId,
     );
@@ -441,7 +440,6 @@ describe("admitted WebChat prompt reactions", () => {
             },
           },
           sessionCtx: { Provider: "webchat" },
-          isHeartbeat: false,
           opts: {
             dashboardReadAdmission: { ...scope, runId, assertCurrent: run.assertSourceCurrent },
           },

@@ -4,12 +4,12 @@ import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-ter
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
+import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import { cleanDeferredFinalText } from "../../tts/captioned-final.js";
 import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
 import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
 import {
   getReplyPayloadMetadata,
-  hasReplyPayloadSpeechContent,
   isReplyPayloadTerminalContent,
   markReplyPayloadAsTtsSupplement,
   setReplyPayloadMetadata,
@@ -62,13 +62,13 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
     turnLedger,
     waitForPendingDirectBlockReplyDelivery,
   } = state;
-  const heartbeat = state.replyOperationRunState.heartbeat;
-  const pendingFinalOptions = { preserveActivity: heartbeat !== undefined };
+  const pendingFinalOptions = {
+    preserveActivity: shouldPreserveUserFacingSessionStateForInputProvenance(
+      state.ctx.InputProvenance,
+    ),
+  };
   throwIfDispatchOperationAborted();
-  const heartbeatReply = await heartbeat?.prepareReply(replyResult, state.replyOperationRunState);
-  throwIfDispatchOperationAborted();
-  const finalResult = heartbeatReply ? heartbeatReply.reply : replyResult;
-  const replies = Array.isArray(finalResult) ? finalResult : finalResult ? [finalResult] : [];
+  const replies = Array.isArray(replyResult) ? replyResult : replyResult ? [replyResult] : [];
   const pendingFinalDeliveryIdentity = replies
     .map((reply) => getReplyPayloadMetadata(reply)?.pendingFinalDeliveryCompletion)
     .find((completion) => completion !== undefined);
@@ -144,7 +144,6 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
         sentFinalPayloadDedupeKeys.has(finalPayloadDedupeKey)
       ) {
         await suppressPendingFinalDelivery(reply, pendingFinalOptions);
-        await heartbeatReply?.settle?.("cancelled");
         continue;
       }
       sentFinalPayloadDedupeKeys.add(finalPayloadDedupeKey);
@@ -154,22 +153,12 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
       const shouldAttachDeferredText = deferFinalTtsText && isReplyPayloadTerminalContent(reply);
       const finalReply = await state.sendFinalPayload(reply, {
         deliveryId: String(replyIndex),
-        ...(heartbeat ? { skipTts: !hasReplyPayloadSpeechContent(reply) } : {}),
         ...(shouldAttachDeferredText
           ? {
               deferredTtsText: deferredTtsTextPending,
             }
           : {}),
       });
-      if (heartbeatReply?.settle) {
-        const settle = heartbeatReply.settle;
-        const outcome =
-          finalReply.dispatcherOutcome ??
-          Promise.resolve(
-            finalReply.blockDeliveryOutcome ?? finalReply.routedOutcome ?? "cancelled",
-          );
-        registerReplyDispatcherSettledTask(dispatcher, () => outcome.then(settle));
-      }
       if (finalReply.suppressionReason) {
         channelTransformSuppressedFinal ||= finalReply.suppressionReason === "channel_transform";
         if (!finalReply.blockDeliveryOutcome) {

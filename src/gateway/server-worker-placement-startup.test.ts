@@ -37,6 +37,7 @@ function placementStoreDefaults(
   }> = () => [],
 ) {
   return {
+    registerTurnClaimClosedHandler: () => () => {},
     readChangeSnapshot: async () => readPlacements(),
     readEnvironmentOwner: async (environmentId: string) =>
       readPlacements().find((placement) => placement.environmentId === environmentId),
