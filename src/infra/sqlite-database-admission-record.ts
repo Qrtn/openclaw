@@ -196,7 +196,7 @@ export class SqliteDatabaseAdmissionRegistry {
     record.writeScopes.clear();
   }
 
-  releaseWorker(owner: number, exitCode: number | undefined): void {
+  releaseWorker(owner: number): void {
     for (const record of this.records.values()) {
       const references = owner > 0 ? record.references.get(owner) : undefined;
       // A worker cannot leave an unpublished write in a database it never borrowed.
@@ -207,7 +207,7 @@ export class SqliteDatabaseAdmissionRegistry {
       const priorReferences = Atomics.exchange(new Int32Array(references), 0, -1);
       this.retireUnreferenced(record);
       // Native close settles receipts before releasing the worker's final reference.
-      if (exitCode === 0 && priorReferences === 0) {
+      if (priorReferences <= 0) {
         continue;
       }
       advanceSqliteDatabaseGeneration(record, "writeRevision");
