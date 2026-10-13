@@ -202,6 +202,9 @@ export function createRelayAgentRunRegistration(
             });
           }
           assertCurrent();
+          if (callId && chat) {
+            (session.consultSessionIds ??= new Map()).set(params.runId, chat.sessionId);
+          }
           return registration;
         },
         undefined,

@@ -1,6 +1,15 @@
-import { releaseSessionSourceAuthorities } from "../../../config/sessions/session-source-authority.js";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { publishTranscriptUpdate } from "../../../config/sessions/session-accessor.sqlite-events.js";
+import { withSessionEntryReadOnlyInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
+import { rewritePreparedTranscriptMessageAtAnchor } from "../../../config/sessions/session-message-rewrite.js";
+import {
+  composeSessionSourceAssertion,
+  releaseSessionSourceAuthorities,
+} from "../../../config/sessions/session-source-authority.js";
+import { readSessionTranscriptAnchorsAsync } from "../../../config/sessions/session-transcript-anchor-read.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
+import { readSessionTranscriptRunId } from "../../../sessions/transcript-events.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import { captureClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import {
@@ -17,6 +26,7 @@ import {
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 } from "../../../talk/voice-transcript.js";
 import { sleep } from "../../../utils/sleep.js";
+import { isTalkAgentConsultFinalMessage } from "../agent-consult-transcript.js";
 import { drainingRelaySessions, type RelaySession } from "./state.js";
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
@@ -182,7 +192,116 @@ export function enqueueRelayVoiceTranscript(
   return true;
 }
 
-export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
+async function revealUnspokenRelayAnswers(
+  session: RelaySession,
+  writer: ClientVoiceSessionWriter,
+): Promise<void> {
+  if (!session.consultSessionIds?.size) {
+    return;
+  }
+  const { agentId, canonicalKey: sessionKey, storePath } = session.sessionTarget;
+  const assertCloseCurrent = composeSessionSourceAssertion(
+    [writer.assertCurrent],
+    (assertSource) => {
+      assertSource();
+      session.runAuthority?.assertCurrent();
+      session.sessionTarget.assertCurrent(session.context.getRuntimeConfig());
+    },
+  );
+  await withSessionEntryReadOnlyInWorker(
+    { agentId, sessionKey, storePath, env: writer.options.env },
+    assertCloseCurrent,
+    async (read, source) => {
+      if (!read.ok) {
+        throw read.error;
+      }
+      const entry = read.value;
+      if (!entry?.sessionId) {
+        return;
+      }
+      const assertCurrent = composeSessionSourceAssertion([
+        assertCloseCurrent,
+        source.assertCurrent,
+      ]);
+      const scope = {
+        agentId,
+        sessionKey,
+        sessionId: entry.sessionId,
+        storePath: source.scope?.storePath ?? storePath,
+        env: writer.options.env,
+      };
+      const facts = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: [],
+        afterSeq: 0,
+        includeSession: true,
+      });
+      assertCurrent();
+      if (
+        facts.session?.sessionId !== entry.sessionId ||
+        facts.session.lifecycleRevision !== entry.lifecycleRevision
+      ) {
+        return;
+      }
+      const entries = facts.tail?.entries ?? [];
+      const entryIds: string[] = [];
+      let spoken = false;
+      for (const item of entries.toReversed()) {
+        if (item.role === "user") {
+          // A later request's acknowledgement cannot replace an earlier answer.
+          spoken = false;
+        } else if (item.entryId.startsWith(`voice:${session.id}:`)) {
+          spoken = true;
+        } else if (
+          !spoken &&
+          item.runId &&
+          session.consultSessionIds?.get(item.runId) === entry.sessionId
+        ) {
+          entryIds.push(item.entryId);
+        }
+      }
+      const selected = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: entryIds.toReversed(),
+      });
+      assertCurrent();
+      for (const anchor of selected.anchors) {
+        const rewritten = await rewritePreparedTranscriptMessageAtAnchor(
+          anchor,
+          (message) => {
+            if (
+              !isRecord(message) ||
+              message.display !== false ||
+              session.consultSessionIds?.get(readSessionTranscriptRunId(message) ?? "") !==
+                entry.sessionId ||
+              !isTalkAgentConsultFinalMessage(message)
+            ) {
+              return undefined;
+            }
+            const visible = { ...message };
+            delete visible.display;
+            return visible;
+          },
+          {
+            assertCurrent,
+            active: "sequence",
+            expectedEntry: { lifecycleRevision: entry.lifecycleRevision ?? null },
+          },
+        );
+        assertCurrent();
+        if (rewritten) {
+          await publishTranscriptUpdate(anchor, {
+            message: rewritten.message,
+            messageId: anchor.entryId,
+          });
+        }
+      }
+    },
+  );
+}
+
+export function closeRelayVoiceSession(
+  session: RelaySession,
+  disposition: "abort" | "detach" = "abort",
+): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
@@ -216,6 +335,9 @@ export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
           },
           writer,
         );
+        if (disposition === "detach") {
+          await revealUnspokenRelayAnswers(session, writer);
+        }
       } finally {
         await writer.release();
       }

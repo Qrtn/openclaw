@@ -122,6 +122,8 @@ function defaultRelayResponse(method: string, supportsBargeIn?: boolean) {
 function createClient(
   supportsBargeIn?: boolean,
   supportsDetach = false,
+  requestImplementation: (method: string) => Promise<unknown> = async (method) =>
+    defaultRelayResponse(method, supportsBargeIn),
 ): RealtimeTalkTransportContext["client"] {
   return {
     hello: { features: { capabilities: supportsDetach ? ["talk-session-close-disposition"] : [] } },
@@ -129,7 +131,7 @@ function createClient(
       listeners.add(listener);
       return () => listeners.delete(listener);
     }),
-    request: vi.fn(async (method: string) => defaultRelayResponse(method, supportsBargeIn)),
+    request: vi.fn(requestImplementation),
   } as unknown as RealtimeTalkTransportContext["client"];
 }
 
@@ -260,11 +262,10 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
   it.each([true, false])(
     "detaches on append timeout before status cleanup (supported=%s)",
     async (supported) => {
-      const client = createClient(undefined, supported);
       const onStatus = vi.fn();
       const append = createDeferred();
       const failed = createDeferred();
-      vi.mocked(client.request).mockImplementation(async (method) =>
+      const client = createClient(undefined, supported, async (method) =>
         method === "talk.session.appendAudio" ? append.promise : defaultRelayResponse(method),
       );
       const transport = await createTransport({ client, callbacks: { onStatus } });
