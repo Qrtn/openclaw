@@ -3,6 +3,7 @@ import path from "node:path";
 import { constants, type DatabaseSync } from "node:sqlite";
 import { MessageChannel } from "node:worker_threads";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { createSqlPublicationTestConnection } from "../../../test/helpers/sql-publication-connection.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { readGatewayLockProcessNamespace } from "../../infra/gateway-lock-payload.js";
 import {
@@ -31,6 +32,7 @@ import {
   authProfileCredentialPublication,
   beginAuthProfileCredentialBatch,
   captureAuthProfileCredentialAuthority,
+  withAuthProfileCredentialWrite,
 } from "../../state/user-model-account-authority.js";
 import { withEnv } from "../../test-utils/env.js";
 import { createExternalAuthRuntime } from "./external-auth.js";
@@ -864,3 +866,36 @@ describe("prepared persisted credential readers", () => {
     }
   });
 });
+
+it.each(["commit", "rollback"])(
+  "settles credential facts on a distinct connection anchor after %s",
+  (outcome) => {
+    const current = fixture("shared-state");
+    const connection = createSqlPublicationTestConnection(current.database.db);
+    const next = store("anchored");
+    const transact = () =>
+      current.transact(({ db }) => {
+        const captured = authProfileCredentialPublication.capture(db, () => {
+          withAuthProfileCredentialWrite(connection, next, () => {
+            db.prepare("UPDATE config_machine_state SET value_json = ? WHERE state_key = ?").run(
+              JSON.stringify(next),
+              "authProfiles.store",
+            );
+          });
+        });
+        expect(captured.receipt.facts.get("store")).toEqual({ kind: "postimage", value: next });
+        expect(() => current.authority.readCurrentCredential()).toThrow("authority is unavailable");
+        if (outcome === "rollback") {
+          throw new Error("synthetic rollback");
+        }
+      });
+    if (outcome === "rollback") {
+      expect(transact).toThrow("synthetic rollback");
+      expect(current.authority.readCurrentCredential()).toEqual(credential("original"));
+    } else {
+      transact();
+      expect(current.authority.readCurrentCredential()).toEqual(credential("anchored"));
+      expect(current.readPersisted()).toEqual(credential("anchored"));
+    }
+  },
+);

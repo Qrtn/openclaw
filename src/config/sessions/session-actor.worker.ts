@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { serialize } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sqlPublicationAnchor } from "../../infra/sql-connection.js";
 import {
   readSqliteDatabasePendingScopedWriteToken,
   readSqliteDatabaseScopedWriteToken,
@@ -142,7 +143,7 @@ export function createSessionActorWorker(
   ) => {
     const sessionKey = working.hot.target.sessionKey;
     const previousPending = pendingStates.get(sessionKey);
-    return stageSqliteTransactionState(database.db, {
+    return stageSqliteTransactionState(sqlPublicationAnchor(database.db), {
       stage: () => pendingStates.set(sessionKey, working),
       rollback() {
         if (previousPending) {
@@ -217,7 +218,7 @@ export function createSessionActorWorker(
       replaceParticipants(working, participants);
       working.hot.version = { ...before.hot.version, sequence: before.hot.version.sequence + 1 };
       if (singleStatement) {
-        stageSqliteTransactionState(database.db, {
+        stageSqliteTransactionState(sqlPublicationAnchor(database.db), {
           stage() {},
           rollback() {},
           commit() {
@@ -377,7 +378,7 @@ export function createSessionActorWorker(
           working.hot.writeToken = pendingToken;
           const mutationRevision = readSqliteNativeMutationRevision(opened.db);
           if (
-            !stageSqliteTransactionState(opened.db, {
+            !stageSqliteTransactionState(sqlPublicationAnchor(opened.db), {
               stage() {},
               rollback() {},
               commit() {
@@ -574,7 +575,7 @@ export function createSessionActorWorker(
               applied,
             });
             if (
-              !stageSqliteTransactionState(opened.db, {
+              !stageSqliteTransactionState(sqlPublicationAnchor(opened.db), {
                 stage() {},
                 rollback() {},
                 commit() {
@@ -623,7 +624,7 @@ export function createSessionActorWorker(
                   kind: "session-actor-committed-transfer" as const,
                   transferId: handle.id,
                 };
-                deferSqliteWorkerCommitReceipt(opened.db, receipt);
+                deferSqliteWorkerCommitReceipt(sqlPublicationAnchor(opened.db), receipt);
                 admit("commit", {
                   kind: "session-actor-admission",
                   snapshot: projectSessionActorAuthority(working.hot),
@@ -639,7 +640,7 @@ export function createSessionActorWorker(
                 transfer.cancel();
               }
             }
-            deferSqliteWorkerCommitReceipt(opened.db, accepted);
+            deferSqliteWorkerCommitReceipt(sqlPublicationAnchor(opened.db), accepted);
             admit("commit", {
               kind: "session-actor-admission",
               snapshot: projectSessionActorAuthority(working.hot),

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../../../src/infra/node-sqlite.js";
 import {
   captureSqliteDatabaseAdmissions,
@@ -11,9 +11,11 @@ import {
 import { assertSqliteIntegrity } from "../../../../src/infra/sqlite-integrity.js";
 import { admitSqliteSchema } from "../../../../src/infra/sqlite-schema-facts.js";
 import { runSqliteImmediateTransactionSync } from "../../../../src/infra/sqlite-transaction.js";
+import { createSqlPublicationTestConnection } from "../../../../test/helpers/sql-publication-connection.js";
 import { observeHostDataSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-import { ensureMemoryIndexSchema } from "./memory-schema.js";
+import * as provenanceSchema from "./memory-schema-provenance.js";
+import { ensureMemoryIndexSchema, stageMemoryIndexSchemaExtension } from "./memory-schema.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -242,3 +244,51 @@ describe("memory physical schema admission", () => {
     );
   });
 });
+
+it.each(["commit", "rollback"])(
+  "shares memory extension admission keys and settlement across an anchor after %s",
+  (outcome) => {
+    using db = openNodeSqliteDatabase(
+      path.join(tempDirs.make("memory-extension-anchor-"), "memory.sqlite"),
+    );
+    admitSqliteSchema(db);
+    const options = { cacheEnabled: true, ftsEnabled: false };
+    ensureMemoryIndexSchema({ db, ...options });
+    const connection = createSqlPublicationTestConnection(db);
+    // Only admission is under test; provenance backfill has its own SQL/engine coverage.
+    const backfill = vi
+      .spyOn(provenanceSchema, "backfillMemoryChunkProvenance")
+      .mockImplementation(() => {});
+    const observed = observeHostDataSql();
+    try {
+      expect(ensureMemoryIndexSchema({ db: connection, ...options })).toEqual({
+        ftsAvailable: false,
+      });
+      expect(schemaStatements(observed.queries)).toEqual([]);
+      const transact = () =>
+        runSqliteImmediateTransactionSync(db, () => {
+          stageMemoryIndexSchemaExtension(connection);
+          db.exec("DROP INDEX idx_memory_index_chunks_source");
+          db.exec("CREATE INDEX idx_memory_index_chunks_source ON memory_index_chunks(source)");
+          if (outcome === "rollback") {
+            throw new Error("synthetic rollback");
+          }
+        });
+      if (outcome === "rollback") {
+        expect(transact).toThrow("synthetic rollback");
+      } else {
+        transact();
+      }
+      observed.queries.length = 0;
+      expect(ensureMemoryIndexSchema({ db, ...options })).toEqual({ ftsAvailable: false });
+      if (outcome === "commit") {
+        expect(schemaStatements(observed.queries)).toEqual([]);
+      } else {
+        expect(schemaStatements(observed.queries).length).toBeGreaterThan(0);
+      }
+    } finally {
+      observed.restore();
+      backfill.mockRestore();
+    }
+  },
+);

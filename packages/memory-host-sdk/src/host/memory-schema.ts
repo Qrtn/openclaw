@@ -30,6 +30,7 @@ import {
   publishSqliteDatabaseAdmission,
   runSqliteImmediateTransactionSync,
   stageSqliteTransactionState,
+  sqlPublicationAnchor,
   type SqliteDatabaseAdmissionKey,
 } from "./openclaw-runtime-sqlite.js";
 export {
@@ -101,16 +102,16 @@ export function stageMemoryIndexSchemaExtension(
   db: DatabaseSync,
   replacement?: { ftsAvailable: boolean },
 ): void {
-  const key = memoryIndexSchemaAdmissionKeys.get(db);
-  const admitted = key && getSqliteDatabaseAdmission(db, key);
+  const key = memoryIndexSchemaAdmissionKeys.get(sqlPublicationAnchor(db));
+  const admitted = key && getSqliteDatabaseAdmission(sqlPublicationAnchor(db), key);
   if (!key || !admitted || (replacement && replacement.ftsAvailable !== admitted.ftsAvailable)) {
     return;
   }
   if (
-    !stageSqliteTransactionState(db, {
+    !stageSqliteTransactionState(sqlPublicationAnchor(db), {
       stage: () => {},
       rollback: () => {},
-      commit: () => publishSqliteDatabaseAdmission(db, key, admitted),
+      commit: () => publishSqliteDatabaseAdmission(sqlPublicationAnchor(db), key, admitted),
     })
   ) {
     throw new Error("Memory schema extensions require a managed transaction");
@@ -381,8 +382,8 @@ export function ensureMemoryIndexSchema(params: {
     schemaDependent: true,
     read: readMemoryIndexSchemaAdmission,
   };
-  memoryIndexSchemaAdmissionKeys.set(params.db, admissionKey);
-  const admitted = getSqliteDatabaseAdmission(params.db, admissionKey);
+  memoryIndexSchemaAdmissionKeys.set(sqlPublicationAnchor(params.db), admissionKey);
+  const admitted = getSqliteDatabaseAdmission(sqlPublicationAnchor(params.db), admissionKey);
   if (admitted) {
     provenanceSchema.backfillMemoryChunkProvenance(params.db);
     if (admitted.ftsAvailable) {
@@ -508,7 +509,7 @@ export function ensureMemoryIndexSchema(params: {
   }
 
   if (!params.ftsEnabled || ftsAvailable) {
-    publishSqliteDatabaseAdmission(params.db, admissionKey, { ftsAvailable });
+    publishSqliteDatabaseAdmission(sqlPublicationAnchor(params.db), admissionKey, { ftsAvailable });
   }
   return { ftsAvailable, ...(ftsError ? { ftsError } : {}) };
 }
