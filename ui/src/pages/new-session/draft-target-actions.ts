@@ -7,11 +7,9 @@ import {
   type createDraftPlaceRestoreState,
 } from "./draft-place-restore.ts";
 import type { DraftRepositoryController } from "./draft-repository-state.ts";
+import type { DraftSuggestedCloudProfile } from "./draft-suggested-cloud-profile.ts";
 import type { DraftRestoredFolderValidation } from "./folder-validation.ts";
-import {
-  environmentDeviceDisabledReason,
-  environmentCloudDisabledReason,
-} from "./hosted-environments.ts";
+import { environmentDeviceDisabledReason } from "./hosted-environments.ts";
 import type { NewSessionModelControl } from "./model-control.ts";
 import { resolveNewSessionWhere } from "./preferences.ts";
 
@@ -20,16 +18,15 @@ type DraftTargetPlace = {
   hostedEnvironment: unknown;
   devices: () => DevicePlacementOption[];
   worktree: boolean;
-  isAdmin: () => boolean;
   folder: string;
   deviceFolderAvailable: boolean;
+  suggestedCloudProfile: DraftSuggestedCloudProfile;
 };
 
 type DraftTargetContext = {
   place: DraftTargetPlace;
   read: () => DraftPlaceSnapshot;
   selection: ReturnType<typeof createDraftPlaceRestoreState>;
-  gateway: DraftGatewayState;
   callbacks: DraftPlaceCallbacks;
   folderValidation: DraftRestoredFolderValidation;
   repositoryState: DraftRepositoryController;
@@ -91,6 +88,7 @@ export function selectDraftDevice(
   ) {
     return;
   }
+  context.place.suggestedCloudProfile.cancel();
   context.selection.whereSelectedByUser = true;
   context.selection.preferredWhereRestore = null;
   if (
@@ -120,19 +118,13 @@ export function selectDraftDevice(
 }
 
 export function selectDraftCloudProfile(context: DraftTargetContext, profileId: string) {
-  const snapshot = context.read();
-  const profile = context.gateway.cloudProfiles.find((candidate) => candidate.id === profileId);
   if (
-    snapshot.submitting ||
-    snapshot.pendingPlacementSessionKey ||
-    context.place.requiredPlacement ||
-    !context.place.isAdmin() ||
-    !profile ||
-    Boolean(environmentCloudDisabledReason(context.modelControl, profile)) ||
+    !context.place.suggestedCloudProfile.canSelect(profileId) ||
     !context.modelControl.selectHostEnvironment()
   ) {
     return;
   }
+  context.place.suggestedCloudProfile.cancel();
   context.clearDeviceFolder();
   context.selection.cloudProfileId = profileId;
   context.selection.deviceId = "";

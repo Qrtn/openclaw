@@ -33,6 +33,7 @@ import {
   type WorkerProviderPreparedIntent,
 } from "./preparation-identity.js";
 import { readWorkerProjectSnapshot } from "./project-preparation.js";
+import { runWorkerProjectLifecycle } from "./project-setup-script.js";
 import { syncSessionRepositoryWorkspace } from "./repository-workspace-startup.js";
 import {
   WorkerPlacementAdmissionTargetError,
@@ -430,6 +431,17 @@ export function createWorkerPlacementDispatchStartup(options: {
         );
       }
       assertSyncOwner();
+      if (preparation?.recipe && preparation.runSetupScript !== false) {
+        await runWorkerProjectLifecycle({
+          recipe: preparation.recipe,
+          tunnel,
+          // A completed activation is the existing durable witness. An interrupted
+          // first binding retries declared setup; commands should be idempotent.
+          postCreate: params.environment.lastActivatedAtMs === null,
+          assertCurrent: assertSyncOwner,
+          signal: params.signal,
+        });
+      }
       const assertActivationCurrent = () => {
         assertRequestCurrent();
         requireAttachedEnvironment();
