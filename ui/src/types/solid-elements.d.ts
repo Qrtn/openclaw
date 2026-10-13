@@ -41,12 +41,8 @@ declare module "@solidjs/web" {
       messageActions: MessageActionDetails | null | undefined;
     }
     interface IntrinsicElements {
-      "openclaw-plugin-contributions": HTMLAttributes<HTMLElement> & {
-        "prop:kind": "header" | "composer";
-        "prop:sessionKey": string;
-        "prop:agentId": string | undefined;
-        "prop:presented": boolean;
-      };
+      "openclaw-github-identity": HTMLAttributes<HTMLElement>;
+      "openclaw-plugins-page": HTMLAttributes<HTMLElement>;
       "openclaw-lobster-pet": HTMLAttributes<HTMLElement> & ElementProperties<LobsterPetProps>;
       "wa-select": HTMLAttributes<WaSelect> & { "prop:value": WaSelect["value"] };
       "wa-option": HTMLAttributes<WaOption> & {
@@ -59,6 +55,12 @@ declare module "@solidjs/web" {
       "openclaw-update-run-view": HTMLAttributes<HTMLElement> & {
         "prop:run": UpdateRunRecord | null;
         "prop:connected": boolean;
+      };
+      "openclaw-plugin-contributions": HTMLAttributes<HTMLElement> & {
+        "prop:kind": "header" | "composer";
+        "prop:sessionKey": string;
+        "prop:agentId": string | undefined;
+        "prop:presented": boolean;
       };
       "openclaw-plugin-view": HTMLAttributes<HTMLElement> &
         PluginViewProperties & {
