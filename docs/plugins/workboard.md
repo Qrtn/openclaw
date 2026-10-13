@@ -122,8 +122,9 @@ nonempty canonical session key and selects cards linked directly, through their
 execution, or through a recorded attempt or event. It can be combined with
 `boardId`; omitting it keeps the full-list behavior. Selection happens in the
 database before card notes, comments, events, and other details are loaded.
-Ordinary keys compare without case; opaque catalog, Matrix, and Signal group
-keys retain their exact identity. Reconnects request a fresh snapshot of the same
+Structural key segments compare without case; opaque catalog, Matrix, and Signal
+group identifiers retain their exact identity. Candidate matching reads only
+session-link fields before loading the matching cards. Reconnects request a fresh snapshot of the same
 scope. `plugin.workboard.changed` includes
 an event `revision` and a separate `cardsRevision`: session-fact notifications
 advance the event sequence without invalidating unchanged cards.

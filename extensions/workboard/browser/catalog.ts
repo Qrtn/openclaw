@@ -118,7 +118,7 @@ export class WorkboardCatalog {
       return this.load;
     }
     if (!force && this.snapshot.ready) {
-      return true;
+      return false;
     }
     const generation = this.generation;
     const load = Promise.resolve().then(async () => {
