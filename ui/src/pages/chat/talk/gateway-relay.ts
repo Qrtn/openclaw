@@ -176,6 +176,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     const wasClosed = this.closed;
     this.stopLocal();
     if (!wasClosed) {
+      const hello = this.ctx.client.hello;
       this.closeCompletion = this.ctx.client
         .request(
           "talk.session.close",
@@ -191,7 +192,11 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
           { timeoutMs: RELAY_CLOSE_TIMEOUT_MS },
         )
         .then(() => undefined);
-      void this.closeCompletion.catch(() => undefined);
+      void this.closeCompletion.catch(() => {
+        if (disposition === "detach" && this.ctx.client.hello === hello) {
+          this.ctx.client.forceReconnect("Talk detach close failed");
+        }
+      });
     }
     return this.closeCompletion;
   }

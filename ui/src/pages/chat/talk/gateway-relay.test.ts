@@ -325,6 +325,50 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
     }
   });
 
+  it.each([false, true])(
+    "reconnects only the failed detach connection (replaced=%s)",
+    async (replaced) => {
+      const closing = createDeferred();
+      const closeStarted = createDeferred();
+      const forceReconnect = vi.fn();
+      const client = createClient(undefined, true, async (method) => {
+        if (method === "talk.session.submitToolResult") {
+          throw new Error("Submission failed");
+        }
+        if (method === "talk.session.close") {
+          closeStarted.resolve();
+          return closing.promise;
+        }
+        if (method === "talk.client.toolCall") {
+          return {
+            runId: "run-1",
+            idempotencyKey: "run-1",
+            agentId: "main",
+            agentSessionKey: "agent:main:main",
+          };
+        }
+        return defaultRelayResponse(method);
+      });
+      Object.assign(client, { forceReconnect });
+      const transport = await createTransport({ client });
+      await startTransport(transport);
+      await emitConsultAndWait(client);
+      emitGatewayFrame({
+        event: "chat",
+        payload: { runId: "run-1", state: "final", message: { text: "Final answer" } },
+      });
+      await closeStarted.promise;
+      if (replaced) {
+        Object.assign(client, { hello: {} });
+      }
+      closing.reject(new Error("Close failed"));
+      await expect(transport.stop()).rejects.toThrow("Close failed");
+      expect(forceReconnect.mock.calls).toEqual(replaced ? [] : [["Talk detach close failed"]]);
+      expect(requestCallsFor(client, "talk.session.close")).toHaveLength(1);
+      expect(requestCallsFor(client, "chat.abort")).toHaveLength(0);
+    },
+  );
+
   it("closes relay resources on microphone loss even when status delivery throws", async () => {
     const track = Object.assign(new EventTarget(), { stop: vi.fn() });
     const addListener = vi.spyOn(track, "addEventListener");
