@@ -62,7 +62,7 @@ function projectionTarget(input: SessionHistoryWorkerPreparedInput) {
 
 export function runSessionBranchSummaryWorkerRequest(
   request: SessionBranchSummaryReadRequest,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ) {
   const { database, ...read } = request;
   return withSessionHistoryWorkerDatabase(
@@ -177,6 +177,7 @@ export function retainSessionHistoryWorkerDatabase(
                 requestLane.pool.run(
                   () => {
                     assertCurrent();
+                    options.prepareRead?.();
                     const input = prepare();
                     const projection = projectionTarget(input);
                     owned.nativeSequences.set(requestLane, ++requestLane.nativeSequence);

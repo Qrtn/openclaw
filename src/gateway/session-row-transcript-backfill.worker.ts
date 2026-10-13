@@ -1,5 +1,6 @@
 import { readSessionTranscriptBoundedMessageTailPageFromProjection } from "../config/sessions/session-accessor.sqlite-active-events-read.js";
 import { withCurrentProjectionSnapshot } from "../config/sessions/session-accessor.sqlite-active-projection.js";
+import { preserveSessionEntryCacheAcrossWrite } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { SessionTranscriptColdError } from "../config/sessions/session-cold-storage-state.js";
 import {
@@ -60,16 +61,18 @@ export function backfillSessionRowTranscriptFieldsInDatabase(
             break;
           }
         }
-        executeSqliteQuerySync(
-          database.db,
-          getSessionKysely(database.db)
-            .updateTable("session_windows")
-            .set({
-              row_transcript_json: JSON.stringify(fields),
-              row_transcript_updated_at: projection.version.updatedAt,
-            })
-            .where("session_id", "=", params.sessionId),
-        );
+        preserveSessionEntryCacheAcrossWrite(database, () => {
+          executeSqliteQuerySync(
+            database.db,
+            getSessionKysely(database.db)
+              .updateTable("session_windows")
+              .set({
+                row_transcript_json: JSON.stringify(fields),
+                row_transcript_updated_at: projection.version.updatedAt,
+              })
+              .where("session_id", "=", params.sessionId),
+          );
+        });
         return fields;
       },
       { transaction: database },

@@ -69,6 +69,7 @@ export function readSessionEntryList(
                   readOpenClawAgentDatabaseIdentity(database).incarnation,
                   current.siblingWriteRevision,
                   current.sessionNodesGeneration,
+                  current.schemaVersion,
                 ]);
           if (token !== undefined && request.ifRevision === token) {
             revision = token;
