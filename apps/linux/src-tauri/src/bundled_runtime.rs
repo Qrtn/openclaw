@@ -68,9 +68,14 @@ fn runtime_directory(prefix: &Path, bytes: &str, manifest: &Manifest) -> PathBuf
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    prefix
-        .join("tools/desktop-runtime")
-        .join(format!("{}-{digest}", manifest.tag))
+    // Source packages add deep platform executable paths. Their hash already
+    // identifies Bun; omitting its tag keeps Codex below Windows' path limit.
+    let directory = if manifest.files.contains_key(PACKAGE_ENTRY) {
+        digest
+    } else {
+        format!("{}-{digest}", manifest.tag)
+    };
+    prefix.join("tools/desktop-runtime").join(directory)
 }
 
 pub(crate) fn seed(app: &AppHandle) -> Result<BundledRuntime, String> {
@@ -441,6 +446,7 @@ mod tests {
     fn publishes_nested_package_bytes_and_rejects_modified_or_traversing_resources() {
         let mut fixture = Fixture::new();
         let mut manifest: serde_json::Value = serde_json::from_str(&fixture.manifest).unwrap();
+        manifest["tag"] = serde_json::json!("signed-runtime-".repeat(4));
         for file in [
             PACKAGE_ENTRY,
             "package/node_modules/openclaw/dist/extensions/codex/index.js",
@@ -461,6 +467,16 @@ mod tests {
         }
         fixture.manifest = manifest.to_string();
         fs::write(fixture.source.join("manifest.json"), &fixture.manifest).unwrap();
+        let parsed = serde_json::from_str(&fixture.manifest).unwrap();
+        let directory = runtime_directory(
+            Path::new("C:/Users/desktop-user.DESKTOP-1234567/.openclaw"),
+            &fixture.manifest,
+            &parsed,
+        );
+        let codex = directory.join(
+            "package/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        );
+        assert!(codex.to_string_lossy().encode_utf16().count() < 260);
         if cfg!(target_os = "macos") {
             assert!(fixture.seed().is_err());
             return;
@@ -493,6 +509,16 @@ mod tests {
         assert!(runtime
             .bun
             .starts_with(fixture.prefix.join("tools/desktop-runtime")));
+        assert!(runtime
+            .bun
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("test-fork-"));
         assert_eq!(fs::read(&runtime.bun).unwrap(), b"synthetic runtime");
         assert_eq!(fixture.seed().unwrap().bun, runtime.bun);
         fs::remove_dir_all(&fixture.source).unwrap();

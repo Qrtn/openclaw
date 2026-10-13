@@ -586,6 +586,8 @@ Non-release Linux and Windows builds also stage the same source commit's core
 package and official Codex plugin, including the target's Codex executable.
 Fresh local setup copies this prepared package into the verified, immutable
 runtime directory and creates the managed CLI launcher without contacting npm.
+This first copy can take several minutes on a fresh computer. Setup waits for
+the newly installed Gateway to become healthy before opening its dashboard.
 The shared desktop release-tag check leaves release builds on their existing
 installer path. The staged build identity makes plugin install, update, and
 Doctor prefer the bundled Codex copy through the same source-plugin owner as
