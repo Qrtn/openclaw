@@ -1,15 +1,6 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { publishTranscriptUpdate } from "../../../config/sessions/session-accessor.sqlite-events.js";
-import { withSessionEntryReadOnlyInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
-import { rewritePreparedTranscriptMessageAtAnchor } from "../../../config/sessions/session-message-rewrite.js";
-import {
-  composeSessionSourceAssertion,
-  releaseSessionSourceAuthorities,
-} from "../../../config/sessions/session-source-authority.js";
-import { readSessionTranscriptAnchorsAsync } from "../../../config/sessions/session-transcript-anchor-read.js";
+import { releaseSessionSourceAuthorities } from "../../../config/sessions/session-source-authority.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import { readSessionTranscriptRunId } from "../../../sessions/transcript-events.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import { captureClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import {
@@ -26,7 +17,6 @@ import {
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 } from "../../../talk/voice-transcript.js";
 import { sleep } from "../../../utils/sleep.js";
-import { isTalkAgentConsultFinalMessage } from "../agent-consult-transcript.js";
 import { drainingRelaySessions, type RelaySession } from "./state.js";
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
@@ -198,111 +188,6 @@ export function enqueueRelayVoiceTranscript(
   return true;
 }
 
-async function revealUnspokenRelayAnswers(
-  session: RelaySession,
-  writer: ClientVoiceSessionWriter,
-): Promise<void> {
-  const consultTranscripts = session.consultTranscripts;
-  if (!consultTranscripts?.size) {
-    return;
-  }
-  const { agentId, canonicalKey: sessionKey, storePath } = session.sessionTarget;
-  const assertCloseCurrent = composeSessionSourceAssertion(
-    [writer.assertCurrent],
-    (assertSource) => {
-      assertSource();
-      session.runAuthority?.assertCurrent();
-      session.sessionTarget.assertCurrent(session.context.getRuntimeConfig());
-    },
-  );
-  await withSessionEntryReadOnlyInWorker(
-    { agentId, sessionKey, storePath, env: writer.options.env },
-    assertCloseCurrent,
-    async (read, source) => {
-      if (!read.ok) {
-        throw read.error;
-      }
-      const entry = read.value;
-      if (!entry?.sessionId) {
-        return;
-      }
-      const assertCurrent = composeSessionSourceAssertion([
-        assertCloseCurrent,
-        source.assertCurrent,
-      ]);
-      const scope = {
-        agentId,
-        sessionKey,
-        sessionId: entry.sessionId,
-        storePath: source.scope?.storePath ?? storePath,
-        env: writer.options.env,
-      };
-      const bounds = [...consultTranscripts.values()].filter(
-        (bound) => bound.sessionId === entry.sessionId,
-      );
-      if (!bounds.length) {
-        return;
-      }
-      const facts = await readSessionTranscriptAnchorsAsync(scope, {
-        entryIds: [],
-        afterSeq: Math.min(...bounds.map((bound) => bound.afterSeq)),
-        includeSession: true,
-      });
-      assertCurrent();
-      if (
-        facts.session?.sessionId !== entry.sessionId ||
-        facts.session.lifecycleRevision !== entry.lifecycleRevision
-      ) {
-        return;
-      }
-      const entries = facts.tail?.entries ?? [];
-      // Speech carries no consult identity, so it cannot certify delivery of these answers.
-      const entryIds = entries.flatMap((item) =>
-        item.role === "assistant" &&
-        item.runId &&
-        consultTranscripts.get(item.runId)?.sessionId === entry.sessionId
-          ? [item.entryId]
-          : [],
-      );
-      const selected = await readSessionTranscriptAnchorsAsync(scope, {
-        entryIds,
-      });
-      assertCurrent();
-      for (const anchor of selected.anchors) {
-        const rewritten = await rewritePreparedTranscriptMessageAtAnchor(
-          anchor,
-          (message) => {
-            if (
-              !isRecord(message) ||
-              message.display !== false ||
-              consultTranscripts.get(readSessionTranscriptRunId(message) ?? "")?.sessionId !==
-                entry.sessionId ||
-              !isTalkAgentConsultFinalMessage(message)
-            ) {
-              return undefined;
-            }
-            const visible = { ...message };
-            delete visible.display;
-            return visible;
-          },
-          {
-            assertCurrent,
-            active: "sequence",
-            expectedEntry: { lifecycleRevision: entry.lifecycleRevision ?? null },
-          },
-        );
-        assertCurrent();
-        if (rewritten) {
-          await publishTranscriptUpdate(anchor, {
-            message: rewritten.message,
-            messageId: anchor.entryId,
-          });
-        }
-      }
-    },
-  );
-}
-
 export function closeRelayVoiceSession(
   session: RelaySession,
   disposition: "abort" | "detach" = "abort",
@@ -332,7 +217,9 @@ export function closeRelayVoiceSession(
       try {
         try {
           if (disposition === "detach") {
-            await withRelayTranscriptRetries(() => revealUnspokenRelayAnswers(session, writer));
+            for (const append of session.unspokenAnswers?.values() ?? []) {
+              await withRelayTranscriptRetries(() => append(writer));
+            }
           }
         } finally {
           const config = session.voiceConfig ?? session.context.getRuntimeConfig();

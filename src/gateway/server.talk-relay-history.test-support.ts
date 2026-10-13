@@ -164,6 +164,7 @@ export async function runTalkRelayCloseHistory({
         connId: connectionId,
       });
     }
+    const transcriptBeforeClose = loadTranscriptEventsSync(scope());
     await rpc("talk.session.close", {
       sessionId: relay.relaySessionId,
       ...(disposition ? { disposition } : {}),
@@ -184,13 +185,23 @@ export async function runTalkRelayCloseHistory({
         .map(extractText)
         .filter((text) => text === answer || text === spokenAnswer || text === followUpAnswer),
     ).toEqual(expectedAnswers);
-    const stored = loadTranscriptEventsSync(scope()).flatMap((event) => {
+    const transcriptAfterClose = loadTranscriptEventsSync(scope());
+    expect(transcriptAfterClose.slice(0, transcriptBeforeClose.length)).toEqual(
+      transcriptBeforeClose,
+    );
+    const stored = transcriptAfterClose.flatMap((event) => {
       const message = asOptionalRecord(asOptionalRecord(event)?.message);
       return message && extractText(message) === answer ? [message] : [];
     });
-    expect(stored.map(extractText)).toEqual(disposition === "detach" ? [answer] : []);
+    expect(stored.map(extractText)).toEqual(
+      disposition === "detach" ? (afterFinal ? [answer, answer] : [answer]) : [],
+    );
     if (disposition === "detach") {
-      expect(stored[0]?.display).toBeUndefined();
+      expect(stored.at(-1)?.display).toBeUndefined();
+      if (afterFinal) {
+        expect(stored[0]?.display).toBe(false);
+        expect(stored[1]?.excludeFromContext).toBe(true);
+      }
     }
   } finally {
     const active = relaySessions.get(relay.relaySessionId);

@@ -1,9 +1,16 @@
+import { publishTranscriptUpdate } from "../../../config/sessions/session-accessor.sqlite-events.js";
+import { appendExpectedSessionTranscriptTurn } from "../../../config/sessions/session-accessor.sqlite-transcript-turn.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import { registerClientVoiceConsultRun } from "../../../talk/client-voice-session.js";
 import type { RealtimeVoiceAgentConsultRunner } from "../../../talk/provider-types.js";
 import { abortChatRunById } from "../../chat-abort.js";
+import {
+  isTalkAgentConsultFinalMessage,
+  prepareTalkAgentConsultTranscript,
+} from "../agent-consult-transcript.js";
 import type { TalkAgentConsultRequest } from "../client-agent-consult.types.js";
 import {
   hasRelayAgentRunRegistrations,
@@ -70,7 +77,7 @@ export function createRelayAgentRunRegistration(
     sessionKey: string;
     runId: string;
     callId?: string;
-    transcriptStart?: { sessionId: string; afterSeq: number };
+    transcriptSession?: { sessionId: string; lifecycleRevision?: string };
     assertCurrent?: () => void;
     registerVoice?: (
       assertCurrent: () => void,
@@ -123,6 +130,60 @@ export function createRelayAgentRunRegistration(
     };
     const registration: RelayAgentRunRegistration = {
       run,
+      prepareTranscript(message, sourceText) {
+        if (run.detached) {
+          return message;
+        }
+        const transcriptSession = params.transcriptSession;
+        if (transcriptSession && isTalkAgentConsultFinalMessage(message)) {
+          const answer = structuredClone(message);
+          (session.unspokenAnswers ??= new Map()).set(params.runId, async (writer) => {
+            const { agentId, canonicalKey: sessionKey, storePath } = session.sessionTarget;
+            const assertCurrent = composeSessionSourceAssertion(
+              [writer.assertCurrent],
+              (assertSource) => {
+                assertSource();
+                session.runAuthority?.assertCurrent();
+                session.sessionTarget.assertCurrent(session.context.getRuntimeConfig());
+              },
+            );
+            const target = {
+              agentId,
+              sessionKey,
+              storePath,
+              sessionId: transcriptSession.sessionId,
+              env: writer.options.env,
+            };
+            const eventId = `talk-detached:${session.id}:${params.runId}`;
+            const result = await appendExpectedSessionTranscriptTurn(target, {
+              keyFormat: "agent-qualified",
+              expectedSessionId: transcriptSession.sessionId,
+              selectedSessionId: transcriptSession.sessionId,
+              selectedLifecycleRevision: transcriptSession.lifecycleRevision,
+              sessionFile: sessionKey,
+              assertCurrent,
+              messages: [
+                {
+                  eventId,
+                  message: { ...answer, idempotencyKey: eventId, excludeFromContext: true },
+                },
+              ],
+            });
+            if (result.rejectedReason) {
+              throw new Error("Realtime relay answer session changed before append");
+            }
+            for (const appended of result.appendedMessages) {
+              if (appended.appended) {
+                await publishTranscriptUpdate(target, {
+                  message: appended.message,
+                  messageId: appended.messageId,
+                });
+              }
+            }
+          });
+        }
+        return prepareTalkAgentConsultTranscript(message, sourceText);
+      },
       isCurrent,
       release,
       abortIfCurrent: () => {
@@ -203,9 +264,6 @@ export function createRelayAgentRunRegistration(
             });
           }
           assertCurrent();
-          if (callId && params.transcriptStart) {
-            (session.consultTranscripts ??= new Map()).set(params.runId, params.transcriptStart);
-          }
           return registration;
         },
         undefined,

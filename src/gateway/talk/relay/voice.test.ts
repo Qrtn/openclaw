@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import * as sessionEntryRead from "../../../config/sessions/session-entry-read-runtime.js";
 import { SqliteWorkerError } from "../../../infra/sqlite-worker-contract.js";
 import {
   captureClientVoiceSessionSettlement,
@@ -101,14 +100,12 @@ describe("realtime relay voice transcript persistence", () => {
       .mockImplementation(() => ({ source, release: () => Promise.resolve() }));
   });
 
-  it.each(["transient read", "persistent read", "voice close"])(
+  it.each(["transient append", "persistent append", "voice close"])(
     "settles detached answer recovery (%s)",
     async (failureKind) => {
       const { session } = createRelaySession();
       session.voiceSessionCreated = true;
-      session.consultTranscripts = new Map([
-        ["accepted-run", { sessionId: "session", afterSeq: 0 }],
-      ]);
+
       const release = vi.fn(async () => {});
       voiceSessionMocks.captureClientVoiceSessionWriter.mockReturnValue({
         options: { env: {} },
@@ -116,34 +113,33 @@ describe("realtime relay voice transcript persistence", () => {
         assertCurrent() {},
         release,
       });
-      const failure = new Error("Answer reconciliation read failed");
-      const read = vi
-        .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
-        .mockRejectedValue(failure);
-      if (failureKind === "transient read") {
-        read.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+      const failure = new Error("Answer append failed");
+      const append = vi.fn().mockRejectedValue(failure);
+      session.unspokenAnswers = new Map([["accepted-run", append]]);
+      if (failureKind === "transient append") {
+        append.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
       } else if (failureKind === "voice close") {
-        read.mockResolvedValue(undefined);
+        append.mockResolvedValue(undefined);
         voiceSessionMocks.closeRelayVoiceSessionRecord.mockRejectedValue(failure);
       }
       try {
         const closing = closeRelayVoiceSession(session, "detach");
-        if (failureKind === "transient read") {
+        if (failureKind === "transient append") {
           await expect(closing).resolves.toBeUndefined();
           expect(session.context.logGateway.warn).not.toHaveBeenCalled();
         } else {
           await expect(closing).rejects.toBe(failure);
           expect(session.context.logGateway.warn).toHaveBeenCalledWith(
-            "realtime relay voice session close failed: Answer reconciliation read failed",
+            "realtime relay voice session close failed: Answer append failed",
           );
         }
-        expect(read).toHaveBeenCalledTimes(
-          failureKind === "transient read" ? 2 : failureKind === "persistent read" ? 3 : 1,
+        expect(append).toHaveBeenCalledTimes(
+          failureKind === "transient append" ? 2 : failureKind === "persistent append" ? 3 : 1,
         );
         expect(voiceSessionMocks.closeRelayVoiceSessionRecord).toHaveBeenCalledOnce();
         expect(release).toHaveBeenCalledOnce();
       } finally {
-        read.mockRestore();
+        session.unspokenAnswers.clear();
       }
     },
   );

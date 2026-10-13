@@ -2984,14 +2984,15 @@ describe("talk.client.toolCall handler", () => {
     const respond = vi.fn();
     const readTranscript = vi
       .spyOn(
-        await import("../../../config/sessions/session-transcript-anchor-read.js"),
-        "readSessionTranscriptAnchorsAsync",
+        await import("../../../config/sessions/session-entry-read-runtime.js"),
+        "withSessionEntryReadOnlyInWorker",
       )
-      .mockResolvedValueOnce({
-        anchors: [],
-        session: { sessionId: "session-main" },
-        watermark: { generation: "transcript-generation", maxSeq: 7 },
-      });
+      .mockImplementationOnce(async (_scope, _assertCurrent, consume) =>
+        consume(
+          { ok: true, value: { sessionId: "session-main", updatedAt: 0 } },
+          { kind: "file", assertCurrent() {} },
+        ),
+      );
     onTestFinished(() => readTranscript.mockRestore());
 
     await callTalkHandler("talk.client.toolCall", {
@@ -3017,7 +3018,7 @@ describe("talk.client.toolCall handler", () => {
       sessionKey: "agent:main:main",
       runId: "run-voice-1",
       callId: "call-1",
-      transcriptStart: { sessionId: "session-main", afterSeq: 7 },
+      transcriptSession: { sessionId: "session-main", lifecycleRevision: undefined },
       assertCurrent: expect.any(Function),
       registerVoice: expect.any(Function),
     });

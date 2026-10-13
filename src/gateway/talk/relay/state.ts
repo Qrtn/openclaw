@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { TalkClientCreateResult } from "../../../../packages/gateway-protocol/src/schema/channels.js";
+import type { PrepareAssistantTranscriptMessage } from "../../../config/sessions/transcript-assistant-delivery.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
 import type { RealtimeVoiceAgentControlResult } from "../../../talk/agent-run-control.js";
 import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
+import type { ClientVoiceSessionWriter } from "../../../talk/client-voice-session-write.js";
 import type { createClientVoiceTranscriptReadiness } from "../../../talk/client-voice-transcript-readiness.js";
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
@@ -258,6 +260,7 @@ export type RelayAgentRunRegistration = {
   isCurrent: () => boolean;
   release: () => void;
   abortIfCurrent: () => void;
+  prepareTranscript: PrepareAssistantTranscriptMessage;
 };
 
 export type RelaySession = {
@@ -276,8 +279,8 @@ export type RelaySession = {
   expiresAtMs: number;
   cleanupTimer: ReturnType<typeof setTimeout>;
   activeAgentRuns: Map<string, RelayAgentRun>;
-  /** Retain admitted transcript identities after completed runs release their live slots. */
-  consultTranscripts?: Map<string, { sessionId: string; afterSeq: number }>;
+  /** Keep completed consult answers until the transport can no longer speak them. */
+  unspokenAnswers?: Map<string, (writer: ClientVoiceSessionWriter) => Promise<void>>;
   provider: string;
   activeAgentToolCalls: Map<string, RelayAgentRunRegistration>;
   toolCalls: RelayToolCallLedger;

@@ -9,7 +9,7 @@ import {
   getCommandSenderAuthority,
   withCommandSenderAuthority,
 } from "../../auto-reply/command-sender-authority.js";
-import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
+import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { normalizeTalkSection } from "../../config/talk.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -160,9 +160,10 @@ export async function startTalkRealtimeAgentConsult(
       toolsAllow: authority.toolsAllow,
       transcript: { display: false, excludeFromContext: true },
       prepareAssistantTranscriptMessage: (assistantMessage, sourceText) =>
-        relayRegistration?.run.detached
-          ? assistantMessage
-          : prepareTalkAgentConsultTranscript(assistantMessage, sourceText),
+        (relayRegistration?.prepareTranscript ?? prepareTalkAgentConsultTranscript)(
+          assistantMessage,
+          sourceText,
+        ),
       beforeDispatch: async ({ runId, assertCurrent, assertWorkAdmissionCurrent }) => {
         let releaseClient: void | (() => void);
         const hasRelay = Boolean(params.relaySessionId && params.connId);
@@ -177,26 +178,33 @@ export async function startTalkRealtimeAgentConsult(
             if (!chat) {
               throw new Error("Realtime relay agent run is not registered");
             }
-            const facts = await readSessionTranscriptAnchorsAsync(
+            const transcriptSession = await withSessionEntryReadOnlyInWorker(
               {
                 agentId: params.sessionTarget.agentId,
                 sessionKey: params.sessionTarget.canonicalKey,
                 storePath: params.sessionTarget.storePath,
-                sessionId: chat.sessionId,
               },
-              { entryIds: [], includeWatermark: true, includeSession: true },
+              assertCurrent,
+              async (read) => {
+                if (!read.ok) {
+                  throw read.error;
+                }
+                if (read.value?.sessionId !== chat.sessionId) {
+                  throw new Error("Realtime relay transcript changed before agent dispatch");
+                }
+                return {
+                  sessionId: chat.sessionId,
+                  lifecycleRevision: read.value.lifecycleRevision,
+                };
+              },
             );
-            assertCurrent();
-            if (facts.session?.sessionId !== chat.sessionId || !facts.watermark) {
-              throw new Error("Realtime relay transcript changed before agent dispatch");
-            }
             relayRegistration = await registerTalkRealtimeRelayAgentRun({
               relaySessionId: params.relaySessionId,
               connId: params.connId,
               sessionKey: params.sessionTarget.canonicalKey,
               runId,
               callId: params.callId,
-              transcriptStart: { sessionId: chat.sessionId, afterSeq: facts.watermark.maxSeq ?? 0 },
+              transcriptSession,
               assertCurrent: assertWorkAdmissionCurrent,
               registerVoice: async (assertRelayCurrent, physicalSource, onRegistered) => {
                 await params.onRunStarted(runId, {

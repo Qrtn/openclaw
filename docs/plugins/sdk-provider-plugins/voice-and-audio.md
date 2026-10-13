@@ -411,6 +411,9 @@ Register each capability inside `register(api)` alongside your existing
     the `talk-session-close-disposition` capability before sending the field.
     On failure, the original agent answers remain visible alongside any recorded
     speech; speech alone cannot prove which overlapping consults were delivered.
+    Answers finishing after detachment are visible when first recorded. Already-hidden
+    answers receive a new visible transcript entry, excluded from model context;
+    closing Talk never rewrites the original transcript messages.
 
   </Tab>
   <Tab title="Media understanding">
