@@ -4,6 +4,7 @@ import type { ApplicationContext } from "../../app/context.ts";
 import { readDeletedSessionStartup } from "../../app/deleted-session-startup.ts";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import type { ImageLightboxItem } from "../../components/image-lightbox.types.ts";
+import { renderContextNewSessionAction } from "../../components/new-session-link.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
@@ -57,6 +58,7 @@ function PendingSessionCreateContent(props: PendingSessionCreateProps) {
         context.gateway.subscribe(closeAndNotify),
         context.chatSubmissions.subscribeCreate(closeAndNotify),
         context.placementStartup.subscribe(notify),
+        context.theme.subscribe(notify),
       ];
       return () => {
         for (const release of unsubscribe) {
@@ -127,6 +129,10 @@ function PendingSessionCreateContent(props: PendingSessionCreateProps) {
         narrow: props.narrow,
         mergedChrome: props.mergedChrome,
         navDrawerOpen: props.navDrawerOpen,
+        newSessionAction:
+          props.mergedChrome && !props.navDrawerOpen
+            ? renderContextNewSessionAction(context, "header-new-session", agentId)
+            : emptyLegacyContent,
         title: t("newSession.title"),
         session: undefined,
         incognito: isIncognitoSessionKey(props.sessionKey),

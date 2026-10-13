@@ -17,6 +17,7 @@ import {
 } from "solid-js";
 import type { MessageGroup as MessageGroupData } from "../../../lib/chat/chat-types.ts";
 import { extractChatSourcePreviews } from "../../../lib/chat/source-previews.ts";
+import { t } from "../../../lib/reactive/i18n.ts";
 import { LitContent } from "../../../lit/solid-bridge.ts";
 import {
   agentRunFrameActiveStatusParts,
@@ -345,6 +346,11 @@ function RunFrame(props: FrameProps) {
       }}
     </FrameBody>,
     <LitContent render={() => state().sourcePreviews} />,
+    <Show when={props.frame.outcome.kind === "interrupted"}>
+      <div class="chat-tasks-status chat-turn-recap chat-turn-recap--continuation" role="status">
+        {t("chat.composer.runInterrupted")}
+      </div>
+    </Show>,
   ];
   return (
     <MessageGroup
