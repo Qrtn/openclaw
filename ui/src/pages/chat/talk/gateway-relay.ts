@@ -381,7 +381,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
           return;
         case "toolCall":
           void this.handleToolCall(event).catch((error: unknown) => {
-            this.reportToolResultSubmissionError(error);
+            this.fail(error);
           });
           return;
         case "toolCallCancelled":
@@ -462,7 +462,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
         sessionId: this.session.relaySessionId,
         markName,
       })
-      .catch((error: unknown) => this.reportToolResultSubmissionError(error));
+      .catch((error: unknown) => this.fail(error));
   }
 
   private async handleToolCall(event: Extract<GatewayRelayEvent, { type?: "toolCall" }>) {
@@ -598,7 +598,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     }
     this.discardDelayedToolResult(pending);
     void this.sendToolResultNow(pending.callId, pending.result).catch((error: unknown) => {
-      this.reportToolResultSubmissionError(error);
+      this.fail(error);
     });
   }
 
@@ -629,15 +629,6 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
       pending.timer = undefined;
     }
     this.delayedToolResults.delete(pending);
-  }
-
-  private reportToolResultSubmissionError(error: unknown): void {
-    if (this.closed) {
-      return;
-    }
-    const message = formatUiError(error);
-    this.lastRelayError = message;
-    this.ctx.callbacks.onStatus?.("error", message);
   }
 
   private completeToolCall(callIdRaw: string | undefined, cancelled = false): void {

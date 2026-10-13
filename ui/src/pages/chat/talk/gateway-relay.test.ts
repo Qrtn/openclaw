@@ -1137,9 +1137,9 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
     void transport.stop();
   });
 
-  it("surfaces rejected provider tool-result submission without an unhandled rejection", async () => {
+  it("detaches after rejected provider tool-result submission and keeps the visible error", async () => {
     const onStatus = vi.fn();
-    const client = createClient();
+    const client = createClient(undefined, true);
     vi.mocked(client["request"]).mockImplementation(async (method) => {
       if (method === "talk.client.toolCall") {
         return {
@@ -1173,7 +1173,11 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
     expect(onStatus).toHaveBeenLastCalledWith("error", "Provider rejected the tool result");
     expect(onStatus).not.toHaveBeenCalledWith("listening");
     expect(requestCallsFor(client, "talk.session.submitToolResult")).toHaveLength(1);
-    void transport.stop();
+    await transport.stop();
+    expect(requestCallsFor(client, "chat.abort")).toHaveLength(0);
+    expect(requestCallsFor(client, "talk.session.close")).toEqual([
+      ["talk.session.close", { sessionId: "relay-1", disposition: "detach" }, { timeoutMs: 8_000 }],
+    ]);
   });
 
   it("submits an interim working result for forced consult tool calls", async () => {
