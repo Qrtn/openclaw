@@ -116,7 +116,7 @@ function normalizeStagedCodexVoiceHost(packageRoot) {
 }
 
 /** Select all official source plugins unless their additional installed payload exceeds 300 MiB. */
-export function planDesktopRuntimePlugins(root) {
+export function planDesktopRuntimePlugins(root, { pluginIds: selectedIds } = {}) {
   const manifest = readJson(path.join(root, "package.json"));
   const commit = git(root, ["rev-parse", "HEAD"]);
   const releaseTag = desktopRuntimeReleaseTag(root, manifest.version, commit);
@@ -140,6 +140,14 @@ export function planDesktopRuntimePlugins(root) {
       officialNames.has(readJson(path.join(directory, "package.json")).name),
     )
     .toSorted((left, right) => left.id.localeCompare(right.id));
+  if (selectedIds) {
+    for (const id of selectedIds) {
+      if (!plugins.some((plugin) => plugin.id === id)) {
+        throw new Error(`The official ${id} source plugin is missing.`);
+      }
+    }
+    return { commit, releaseTag: null, pluginIds: [...new Set(selectedIds)].sort() };
+  }
   const coreDependencies = runtimeDependencies(root);
   const addedDependencies = new Set();
   let allPluginBytes = 0;

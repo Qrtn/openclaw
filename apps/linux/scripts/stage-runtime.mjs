@@ -4,15 +4,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resourceBytes, stagePackage } from "./stage-package.mjs";
+
+export { resourceBytes };
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const destination = path.join(root, "apps/linux/src-tauri/target/desktop-runtime");
-
-export function resourceBytes(executable) {
-  // linuxdeploy rewrites ELF resources even without executable permissions.
-  // This fixed envelope is stripped by bundled_runtime.rs; hashes cover raw bytes.
-  return Buffer.concat([Buffer.from("OPENCLAW-BUN-RUNTIME-V1\n"), executable]);
-}
 
 export function runtimeTarget(triple) {
   if (
@@ -141,6 +138,9 @@ export async function stageRuntime(triple) {
       fs.rmSync(path.join(work, "bun-manifest.json"));
     } else {
       fs.writeFileSync(path.join(work, "manifest.json"), "{}\n");
+    }
+    if (target && JSON.parse(fs.readFileSync(path.join(work, "manifest.json"), "utf8")).files) {
+      stagePackage(root, work, target);
     }
     fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(work, destination);

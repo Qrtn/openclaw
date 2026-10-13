@@ -171,6 +171,17 @@ describe("desktop runtime source plugins", () => {
     ).not.toHaveProperty("stagedOfficialPlugins");
   });
 
+  it("lets a desktop stage only Codex without requiring other plugins' builds", () => {
+    const { root, commit } = fixture();
+    expect(planDesktopRuntimePlugins(root, { pluginIds: ["codex"] })).toMatchObject({
+      commit,
+      releaseTag: null,
+      pluginIds: ["codex"],
+    });
+    git(root, "tag", "v2026.10.2");
+    expect(planDesktopRuntimePlugins(root, { pluginIds: ["codex"] }).pluginIds).toEqual([]);
+  });
+
   it("counts additional transitive dependencies and falls back to first-run Codex above 300 MiB", () => {
     const { root } = fixture();
     writeJson(root, "extensions/extra/package.json", {

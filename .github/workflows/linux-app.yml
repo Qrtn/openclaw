@@ -102,7 +102,8 @@ jobs:
           node --test \
             apps/linux/scripts/test-native-control-auth.mjs \
             apps/linux/scripts/test-runtime-boundary.mjs \
-            apps/linux/scripts/test-stage-runtime.mjs
+            apps/linux/scripts/test-stage-runtime.mjs \
+            apps/linux/scripts/test-stage-package.mjs
 
       - name: Test packaged runtime ABI scanner
         run: |
@@ -419,7 +420,9 @@ jobs:
 
       - name: Verify Windows runtime, installer, and desktop boundaries
         working-directory: apps/linux/src-tauri
-        run: cargo +stable test --locked --bin openclaw-desktop
+        run: |
+          node --test ../scripts/test-stage-runtime.mjs ../scripts/test-stage-package.mjs
+          cargo +stable test --locked --bin openclaw-desktop
 
       - name: Build Windows installer without publishing
         working-directory: apps/linux/src-tauri

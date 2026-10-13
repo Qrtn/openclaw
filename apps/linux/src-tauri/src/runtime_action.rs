@@ -491,8 +491,7 @@ pub(crate) fn managed_command(cli: &OpenClawCli) -> Result<Option<Command>, Stri
     Ok(Some(command))
 }
 
-/// Publish the initial Windows launcher only after the bundled package has been installed.
-#[cfg(target_os = "windows")]
+/// Publish the initial launcher only after the bundled package has been installed.
 pub(crate) fn install_launcher(
     prefix: &Path,
     runtime: &BundledRuntime,
@@ -519,6 +518,7 @@ pub(crate) fn install_launcher(
             path,
             bytes,
             entry,
+            #[cfg(target_os = "windows")]
             runtime: runtime.clone(),
         },
         runtime,

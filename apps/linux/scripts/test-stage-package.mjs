@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { stageInstalledPackage, stagePackage } from "./stage-package.mjs";
+
+const commit = "a".repeat(40);
+const write = (root, file, value) => {
+  const target = path.join(root, file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, typeof value === "string" ? value : JSON.stringify(value));
+};
+const read = (root, file) => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+
+for (const platform of ["linux", "windows"]) {
+  test(`stages same-commit Codex and ${platform} dependencies as verified resources`, (t) => {
+    // openclaw-temp-dir: allow verifies raw Tauri resource publication
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tauri-package-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const installed = path.join(root, "installed");
+    const work = path.join(root, "work");
+    const core = "node_modules/openclaw";
+    const native = `node_modules/@openai/codex-${platform === "windows" ? "win32" : platform}-x64`;
+    write(installed, `${core}/package.json`, { name: "openclaw" });
+    write(installed, `${core}/openclaw.mjs`, "export {};\n");
+    write(installed, `${core}/dist/build-info.json`, { commit });
+    write(installed, `${core}/dist/extensions/codex/package.json`, {
+      openclaw: { extensions: ["./index.js"] },
+    });
+    write(installed, `${core}/dist/extensions/codex/index.js`, "export {};\n");
+    write(installed, `${native}/package.json`, { name: "@openai/codex" });
+    write(installed, `${native}/vendor/codex`, "synthetic platform executable");
+    write(work, "manifest.json", { files: { "bin/bun": "existing-runtime-hash" } });
+    const added = stageInstalledPackage(installed, work, { platform, arch: "x64" }, {
+      commit, pluginIds: ["codex"],
+    });
+    const decode = (file) => {
+      const bytes = fs.readFileSync(path.join(work, "package", file));
+      return platform === "linux" ? bytes.subarray(Buffer.byteLength("OPENCLAW-BUN-RUNTIME-V1\n")) : bytes;
+    };
+    const build = JSON.parse(decode(`${core}/dist/build-info.json`));
+    assert.deepEqual(build.stagedOfficialPlugins, { commit, pluginIds: ["codex"] });
+    assert.equal(decode(`${native}/vendor/codex`).toString(), "synthetic platform executable");
+    const manifest = read(work, "manifest.json");
+    assert.equal(manifest.files["bin/bun"], "existing-runtime-hash");
+    assert.equal(manifest.files[`package/${native}/vendor/codex`],
+      createHash("sha256").update("synthetic platform executable").digest("hex"));
+    assert.ok(added > 0);
+    assert.throws(() => stageInstalledPackage(installed, work, { platform, arch: "arm64" }, {
+      commit, pluginIds: ["codex"],
+    }), /Cannot find module/);
+  });
+}
+
+test("exact release builds leave runtime resources unchanged without building or installing core", (t) => {
+  // openclaw-temp-dir: allow exercises the exact Git release boundary
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tauri-release-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  execFileSync("git", ["init", "--quiet", root]);
+  execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "commit", "--allow-empty", "-qm", "fixture"]);
+  execFileSync("git", ["-C", root, "tag", "v2026.10.2"]);
+  write(root, "package.json", { version: "2026.10.2" });
+  const work = path.join(root, "resources");
+  write(work, "manifest.json", { files: { "bin/bun": "original" } });
+  stagePackage(root, work, { platform: "linux", arch: "x64" });
+  assert.deepEqual(fs.readdirSync(work), ["manifest.json"]);
+  assert.deepEqual(read(work, "manifest.json"), { files: { "bin/bun": "original" } });
+});
