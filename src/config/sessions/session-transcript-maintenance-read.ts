@@ -19,7 +19,7 @@ import type {
   SessionTranscriptMaintenanceRead,
   SessionTranscriptMaintenanceFacts,
 } from "./session-transcript-hydration.types.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 export function readSessionTranscriptMaintenance(
   database: OpenClawAgentReadOnlyDatabase,
@@ -67,7 +67,7 @@ export function readSessionTranscriptMaintenance(
           database.db,
           getSessionKysely(database.db)
             .selectFrom("transcript_events")
-            .select(transcriptEventJsonSql(database.db).as("event_json"))
+            .select(transcriptPayloadColumns(database.db))
             .where("session_id", "=", target.sessionId)
             .where("seq", ">=", first.seq)
             .where("seq", "<=", last.seq)
@@ -75,7 +75,9 @@ export function readSessionTranscriptMaintenance(
         );
         const events: TranscriptEvent[] = [];
         for (const row of rows) {
-          const event: TranscriptEvent = JSON.parse(row.event_json);
+          const event: TranscriptEvent = JSON.parse(
+            readSelectedTranscriptPayload(database.db, row),
+          );
           const message = asOptionalRecord(asOptionalRecord(event)?.message);
           if (
             message?.customType === NESTED_TOOL_ACTIVITY_CUSTOM_TYPE &&

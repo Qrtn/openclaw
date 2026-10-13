@@ -9,7 +9,11 @@ import {
   type CurrentTranscriptProjection,
 } from "./session-accessor.sqlite-projection-read.js";
 import { collectCacheTtlProjectionPrefix } from "./session-cache-ttl-prefix-values.js";
-import { transcriptEventJsonSql, transcriptEventModelNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  transcriptEventModelNavigationSql,
+} from "./transcript-payload.js";
 import { assertTranscriptNavigationValid } from "./transcript-predicate-fields.js";
 
 /** Projection dependencies are metadata, separate from the byte-bounded model history. */
@@ -39,13 +43,14 @@ export function readCacheTtlProjectionPrefix(
           .onRef("identity.session_id", "=", "active.session_id")
           .onRef("identity.seq", "=", "active.event_seq"),
       )
+      .select(transcriptPayloadColumns(projection.database.db, "event"))
       .select((eb) =>
         eb
           .case()
           .when(entryType, "=", "reset")
           // Preserve the classified kind when legacy JSON starts with another duplicate type.
           .then(transcriptEventModelNavigationSql("event", sql.lit("reset")))
-          .else(transcriptEventJsonSql(projection.database.db, "event"))
+          .else(null)
           .end()
           .as("event_json"),
       )
@@ -81,7 +86,9 @@ export function readCacheTtlProjectionPrefix(
     (function* () {
       for (const row of rows) {
         assertTranscriptNavigationValid(row.navigation_valid);
-        yield JSON.parse(row.event_json) as unknown;
+        yield JSON.parse(
+          row.event_json ?? readSelectedTranscriptPayload(projection.database.db, row),
+        ) as unknown;
       }
     })(),
   );

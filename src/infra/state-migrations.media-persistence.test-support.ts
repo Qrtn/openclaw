@@ -16,7 +16,8 @@ import {
 } from "../config/sessions/session-transcript-projection-append.js";
 import {
   createTranscriptEventInserter,
-  transcriptEventJsonSql,
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
 } from "../config/sessions/transcript-payload.js";
 import {
   scanSessionTranscriptTree,
@@ -36,6 +37,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { engineTextByteSliceSql } from "./database-engine/text-bytes.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, requireNodeSqlite } from "./node-sqlite.js";
 import { admitSqliteSchema } from "./sqlite-schema-facts.js";
@@ -224,14 +226,26 @@ export function readDatabaseSnapshot(databasePath: string) {
         .selectFrom("transcript_events")
         .select(["session_id", "seq", "created_at"])
         .select(
-          (version.user_version < 22
-            ? sql.ref<string>("transcript_events.event_json") // kysely-allow-raw: frozen pre22 TEXT NOT NULL.
-            : transcriptEventJsonSql(database)
-          ).as("event_json"),
+          version.user_version < 22
+            ? [
+                engineTextByteSliceSql(database, sql.ref<string>("event_json"), 1, 64 * 1024).as(
+                  "event_data",
+                ),
+                sql<Uint8Array | null>`NULL`.as("event_zstd"), // kysely-allow-raw: frozen pre22 identity TEXT.
+                sql<number | null>`NULL`.as("event_utf8_bytes"), // kysely-allow-raw: frozen pre22 has no payload metadata.
+                sql.ref<string>("session_id").as("payload_session_id"),
+                sql.ref<number>("seq").as("payload_seq"),
+              ]
+            : transcriptPayloadColumns(database),
         )
         .orderBy("session_id")
         .orderBy("seq"),
-    ).rows;
+    ).rows.map((row) => ({
+      session_id: row.session_id,
+      seq: row.seq,
+      created_at: row.created_at,
+      event_json: readSelectedTranscriptPayload(database, row),
+    }));
     const identities = database
       .prepare(
         "SELECT session_id,event_id,seq,event_type,parent_id,message_idempotency_key,created_at FROM transcript_event_identities ORDER BY session_id,seq",

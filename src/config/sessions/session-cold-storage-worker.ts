@@ -78,7 +78,11 @@ import {
   sqliteSessionTranscriptTurnRebound,
 } from "./session-turn.kernel.js";
 import { resolveSessionWorkStartError } from "./session-work-start.js";
-import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
+import {
+  prepareTranscriptPayload,
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "./transcript-payload.js";
 
 export type SessionColdPreparationWorkerData = {
   type: "sqlite-transcript-archive-v2";
@@ -175,14 +179,18 @@ async function prepareSessionColdArchiveInWorker(
                 db
                   .selectFrom("transcript_events")
                   .select("seq")
-                  .select(transcriptEventJsonSql(database.db).as("event_json"))
+                  .select(transcriptPayloadColumns(database.db))
                   .select("created_at")
                   .where("session_id", "=", plan.sessionId)
                   .orderBy("seq"),
               )) {
                 eventCount++;
-                rawBytes += Buffer.byteLength(row.event_json);
-                write({ kind: "event", row });
+                const eventJson = readSelectedTranscriptPayload(database.db, row);
+                rawBytes += Buffer.byteLength(eventJson);
+                write({
+                  kind: "event",
+                  row: { seq: row.seq, event_json: eventJson, created_at: row.created_at },
+                });
               }
               for (const row of iterateSqliteQuerySync(
                 database.db,

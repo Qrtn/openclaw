@@ -11,7 +11,10 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../config/sessions/transcript-payload.js";
 import { buildUsageOverview } from "../shared/usage-overview.js";
 import {
   openOpenClawAgentDatabaseReadOnly,
@@ -261,28 +264,30 @@ export async function executeUsageCostWorker(
     const database = target(marker.agentId, marker.storePath);
     const stored = await readStore(marker.agentId, marker.storePath, () => {
       const result = withOpenClawAgentDatabaseReadOnly(
-        (opened) => {
-          const query = getSessionKysely(opened.db)
-            .selectFrom("transcript_events")
-            .select(["seq", transcriptEventJsonSql(opened.db).as("event_json")])
-            .where("session_id", "=", marker.sessionId)
-            .where("seq", ">", afterSeq)
-            .where("seq", "<=", throughSeq)
-            .orderBy("seq", "asc")
-            .limit(1_024);
-          const page: Array<{ seq: number; event_json: string }> = [];
-          let bytes = 0;
-          // Stop before parsing: retain at most 8 MiB plus one lookahead event.
-          for (const row of iterateSqliteQuerySync(opened.db, query)) {
-            const size = Buffer.byteLength(row.event_json);
-            if (page.length > 0 && bytes + size > 8 * 1024 * 1024) {
-              break;
+        (opened) =>
+          runSqliteReadSnapshotSync(opened.db, () => {
+            const query = getSessionKysely(opened.db)
+              .selectFrom("transcript_events")
+              .select(["seq", ...transcriptPayloadColumns(opened.db)])
+              .where("session_id", "=", marker.sessionId)
+              .where("seq", ">", afterSeq)
+              .where("seq", "<=", throughSeq)
+              .orderBy("seq", "asc")
+              .limit(1_024);
+            const page: Array<{ seq: number; event_json: string }> = [];
+            let bytes = 0;
+            // Stop before parsing: retain at most 8 MiB plus one lookahead event.
+            for (const row of iterateSqliteQuerySync(opened.db, query)) {
+              const eventJson = readSelectedTranscriptPayload(opened.db, row);
+              const size = Buffer.byteLength(eventJson);
+              if (page.length > 0 && bytes + size > 8 * 1024 * 1024) {
+                break;
+              }
+              page.push({ seq: row.seq, event_json: eventJson });
+              bytes += size;
             }
-            page.push(row);
-            bytes += size;
-          }
-          return page;
-        },
+            return page;
+          }),
         { ...database, env },
       );
       return result.found ? result.value : [];

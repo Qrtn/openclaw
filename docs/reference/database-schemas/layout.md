@@ -26,6 +26,10 @@ In agent schema 23, `transcript_events` retains original event JSON as either
 `event_json` TEXT or `event_zstd` BLOB, with byte counts and bounded navigation
 metadata for compressed rows. Use the transcript accessor or supported exports
 to reconstruct history; selecting `event_json` alone omits compressed events.
+Readers select canonical compressed bytes only after predicates and byte admission,
+then decode them with the worker codec. Identity text crosses the database boundary
+in 64-KiB slices. Full hydration uses bounded keyset pages and keeps one read
+snapshot through host acknowledgements, flushing at 1 MiB or 128 frames.
 Memory chunk/cache embeddings are little-endian Float64 BLOBs. See
 [compact agent payload storage](/reference/database-schemas/agent-schema-history#compact-agent-payload-storage).
 

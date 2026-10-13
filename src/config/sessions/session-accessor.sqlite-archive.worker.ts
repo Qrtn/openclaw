@@ -62,7 +62,7 @@ import type {
   SessionColdPreparationWorkerData,
   SessionColdWorkerData,
 } from "./session-cold-storage-worker.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 type TranscriptArchiveDatabase = Pick<
   OpenClawAgentKyselyDatabase,
@@ -94,22 +94,23 @@ function stageTranscriptArchiveContent(
       database,
       db
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(database).as("event_json"))
+        .select(transcriptPayloadColumns(database))
         .where("session_id", "=", sessionId)
         .orderBy("seq", "asc"),
     )) {
-      if (typeof row.event_json !== "string") {
+      const eventJson = readSelectedTranscriptPayload(database, row);
+      if (typeof eventJson !== "string") {
         throw new Error(`Invalid transcript event row for ${sessionId}`);
       }
-      const rowBytes = Buffer.byteLength(row.event_json, "utf8") + 1;
+      const rowBytes = Buffer.byteLength(eventJson, "utf8") + 1;
       if (bufferedBytes + rowBytes > TRANSCRIPT_ARCHIVE_WRITE_BUFFER_BYTES) {
         flush();
       }
       if (rowBytes >= TRANSCRIPT_ARCHIVE_WRITE_BUFFER_BYTES) {
-        fs.writeFileSync(fd, row.event_json);
+        fs.writeFileSync(fd, eventJson);
         fs.writeFileSync(fd, "\n");
       } else {
-        bufferedParts.push(row.event_json, "\n");
+        bufferedParts.push(eventJson, "\n");
         bufferedBytes += rowBytes;
       }
       rowCount += 1;

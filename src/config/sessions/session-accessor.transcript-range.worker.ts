@@ -10,7 +10,11 @@ import { assertSqliteJsonlReadBudget } from "../../infra/sqlite-jsonl-budget.js"
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import type { TranscriptEntryAnchor, TranscriptTurnBoundary } from "./transcript-entry-anchor.js";
-import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptEventNavigationSql,
+  transcriptPayloadColumns,
+} from "./transcript-payload.js";
 
 export type ClosedTranscriptTurnReadResult =
   | {
@@ -270,10 +274,13 @@ export function readClosedTranscriptTurnInDatabase(
       }
       const rows = executeSqliteQuerySync(
         connection,
-        selected.select(transcriptEventJsonSql(connection, "event").as("event_json")),
+        selected.select(transcriptPayloadColumns(connection, "event")),
       ).rows;
       const messages = rows.flatMap((row) => {
-        const event = JSON.parse(row.event_json) as { message?: unknown; type?: unknown };
+        const event = JSON.parse(readSelectedTranscriptPayload(connection, row)) as {
+          message?: unknown;
+          type?: unknown;
+        };
         return event.type === "message" && event.message ? [event.message as AgentMessage] : [];
       });
       return {

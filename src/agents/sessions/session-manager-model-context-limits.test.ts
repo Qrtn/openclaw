@@ -8,9 +8,13 @@ import {
   upsertSessionEntryCore,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
-import { transcriptEventJsonSql } from "../../config/sessions/transcript-payload.js";
-import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../../config/sessions/transcript-payload.js";
+import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
+import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
@@ -249,16 +253,38 @@ it("avoids text copies of omitted message objects when SQLite supports binary JS
       source.appendMessage(makeUserMessage("latest request", 2));
       const expected = source.buildSessionContext().messages.slice(-1);
       const database = openOpenClawAgentDatabase({ agentId: "main", path: scope.storePath });
-      const payload = transcriptEventJsonSql(database.db).compile(getNodeSqliteKysely(database.db));
+      const db = getNodeSqliteKysely<DB>(database.db);
+      const payload = executeSqliteQueryTakeFirstSync(
+        database.db,
+        db
+          .selectFrom("transcript_events")
+          .select(transcriptPayloadColumns(database.db))
+          .where("session_id", "=", scope.sessionId)
+          .where(
+            "seq",
+            "in",
+            db
+              .selectFrom("transcript_event_identities")
+              .select("seq")
+              .where("session_id", "=", scope.sessionId)
+              .where("event_id", "=", omittedId),
+          ),
+      );
+      expect(payload).toBeDefined();
       // Exercise native identity projection on both JSONB and SQLite 3.44.
       expect(
         database.db
-          .prepare(`UPDATE transcript_events SET event_json = ${payload.sql},
+          .prepare(`UPDATE transcript_events SET event_json = ?,
             event_zstd = NULL, event_utf8_bytes = NULL, navigation_json = NULL
             WHERE session_id = ? AND seq = (
               SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?
             )`)
-          .run(scope.sessionId, scope.sessionId, omittedId).changes,
+          .run(
+            readSelectedTranscriptPayload(database.db, payload!),
+            scope.sessionId,
+            scope.sessionId,
+            omittedId,
+          ).changes,
       ).toBe(1);
       let messageObjectCopies = 0;
       // Preserve SQLite extraction while observing whole-message text intermediates.

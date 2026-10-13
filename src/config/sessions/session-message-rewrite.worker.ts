@@ -96,7 +96,7 @@ import type {
 } from "./session-transcript-mutation.types.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 export type SessionMessageRewriteOperations = {
   "session.transcript.lock.cold": {
@@ -597,14 +597,15 @@ function prepareMessageRewrite(
     database.db,
     getSessionKysely(database.db)
       .selectFrom("transcript_events")
-      .select(transcriptEventJsonSql(database.db).as("event_json"))
+      .select(transcriptPayloadColumns(database.db))
       .where("session_id", "=", scope.sessionId)
       .where("seq", "=", seq),
   );
   if (!row) {
     return null;
   }
-  const event: unknown = JSON.parse(row.event_json);
+  const eventJson = readSelectedTranscriptPayload(database.db, row);
+  const event: unknown = JSON.parse(eventJson);
   if (
     !isRecord(event) ||
     event.type !== "message" ||
@@ -613,7 +614,7 @@ function prepareMessageRewrite(
   ) {
     return null;
   }
-  return { seq, eventJson: row.event_json, event };
+  return { seq, eventJson, event };
 }
 
 export function commitSessionMessageRewrite(

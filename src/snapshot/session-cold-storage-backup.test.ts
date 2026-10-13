@@ -15,7 +15,10 @@ import {
   runSessionColdStorageMaintenance,
 } from "../config/sessions/session-cold-storage.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../config/sessions/transcript-payload.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
@@ -41,10 +44,14 @@ function readOriginalEvents(database: DatabaseSync) {
     database,
     getNodeSqliteKysely<DB>(database)
       .selectFrom("transcript_events")
-      .select(["seq", transcriptEventJsonSql(database).as("event_json"), "created_at"])
+      .select(["seq", ...transcriptPayloadColumns(database), "created_at"])
       .where("session_id", "=", sessionId)
       .orderBy("seq"),
-  ).rows;
+  ).rows.map((row) => ({
+    seq: row.seq,
+    created_at: row.created_at,
+    event_json: readSelectedTranscriptPayload(database, row),
+  }));
 }
 
 afterEach(async () => {

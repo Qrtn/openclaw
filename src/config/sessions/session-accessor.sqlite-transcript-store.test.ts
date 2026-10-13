@@ -310,7 +310,10 @@ describe("SQLite exact transcript rewrite", () => {
         (sql) =>
           /\bsession_transcript_fts\b/i.test(sql)
             ? "fts"
-            : sql.includes('from "transcript_events"') && sql.includes("octet_length")
+            : // Primary-key payload admission is not a transcript-wide size scan.
+              sql.includes('from "transcript_events"') &&
+                sql.includes("octet_length") &&
+                !sql.includes('"seq" =')
               ? "size"
               : null,
       );

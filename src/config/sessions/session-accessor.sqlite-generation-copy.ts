@@ -6,6 +6,8 @@ import {
   prepareSqliteQuerySync,
   sqliteStringSet,
 } from "../../infra/kysely-sync.js";
+import { isPostgresSqlConnection } from "../../infra/sql-connection.js";
+import { readSqliteTextEncoding } from "../../infra/sqlite-schema-admission.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
@@ -26,7 +28,11 @@ import {
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import { transcriptEventJsonSql, type TranscriptPayloadRecord } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  type TranscriptPayloadRecord,
+} from "./transcript-payload.js";
 import { deriveTranscriptPredicateFields } from "./transcript-predicate-fields.js";
 
 export function readSqliteSessionGenerationWindows(
@@ -146,16 +152,24 @@ function readSqliteSessionGenerationFacts(
   };
   hashRows(
     "events",
-    iterateSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select(["session_id", "seq"])
-        .select(transcriptEventJsonSql(database.db).as("event_json"))
-        .select("created_at")
-        .where("session_id", "=", window.session_id)
-        .orderBy("seq"),
-    ),
+    (function* () {
+      for (const row of iterateSqliteQuerySync(
+        database.db,
+        getSessionKysely(database.db)
+          .selectFrom("transcript_events")
+          .select(["session_id", "seq", ...transcriptPayloadColumns(database.db), "created_at"])
+          .where("session_id", "=", window.session_id)
+          .orderBy("seq"),
+      )) {
+        // Preserve the existing fingerprint's serialized field order.
+        yield {
+          session_id: row.session_id,
+          seq: row.seq,
+          event_json: readSelectedTranscriptPayload(database.db, row),
+          created_at: row.created_at,
+        };
+      }
+    })(),
     (row) => ["event", row.seq, row.event_json],
   );
   hashRows("identities", rows.identities, (row) => [
@@ -299,17 +313,22 @@ export function copySqliteSessionGenerationRows(params: {
   );
   // UTF-16 destinations retain native TEXT byte accounting and JSON semantics.
   // UTF-8 stores can preserve encoded payloads without another codec round trip.
-  const destinationEncoding = params.destination.db.prepare("PRAGMA encoding").get()?.encoding;
+  const destinationEncoding = isPostgresSqlConnection(params.destination.db)
+    ? "UTF-8"
+    : readSqliteTextEncoding(params.destination.db);
   if (destinationEncoding !== "UTF-8") {
     for (const row of iterateSqliteQuerySync(
       params.source.db,
       eventQuery
         .select(["session_id", "seq", "created_at"])
-        .select(transcriptEventJsonSql(params.source.db).as("event_json")),
+        .select(transcriptPayloadColumns(params.source.db)),
     )) {
+      const eventJson = readSelectedTranscriptPayload(params.source.db, row);
       insertEvent({
-        ...row,
-        ...deriveTranscriptPredicateFields(row.event_json),
+        seq: row.seq,
+        created_at: row.created_at,
+        event_json: eventJson,
+        ...deriveTranscriptPredicateFields(eventJson),
         event_zstd: null,
         event_utf8_bytes: null,
         navigation_json: null,

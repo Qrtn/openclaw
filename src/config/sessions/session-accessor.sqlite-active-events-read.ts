@@ -19,7 +19,7 @@ import {
   resolveTranscriptBoundaryWindow,
 } from "./session-accessor.sqlite-reset-window.js";
 import { MAX_VISIBLE_MESSAGE_MAX_MESSAGES } from "./session-accessor.sqlite-visible-cursor.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 /** Reads a bounded active-path tail while preserving transcript line and byte caps. */
 export function readRecentSessionTranscriptMessageEventsFromProjection(
@@ -79,7 +79,7 @@ export function withRecentSessionTranscriptActiveEventsInSnapshot<T>(
         .onRef("event.session_id", "=", "active.session_id")
         .onRef("event.seq", "=", "active.event_seq"),
     )
-    .select(transcriptEventJsonSql(projection.database.db, "event").as("event_json"))
+    .select(transcriptPayloadColumns(projection.database.db, "event"))
     .where("active.session_id", "=", projection.resolved.sessionId)
     .where("active.context_eligible", "=", 1)
     .orderBy("active.active_position", "desc")
@@ -97,10 +97,11 @@ export function withRecentSessionTranscriptActiveEventsInSnapshot<T>(
       // Finish stepping before reporting JSON errors: SQL failures take precedence,
       // followed by the oldest malformed row in the selected tail.
       for (const row of iterateSqliteQuerySync(projection.database.db, query)) {
+        const eventJson = readSelectedTranscriptPayload(projection.database.db, row);
         let event: TranscriptEvent;
         try {
           // SAFETY: Transcript writers persist TranscriptEvent objects; parse failures are handled here.
-          event = JSON.parse(row.event_json) as TranscriptEvent;
+          event = JSON.parse(eventJson) as TranscriptEvent;
         } catch (error) {
           parseError = toErrorObject(error, "Transcript event JSON parsing failed");
           continue;

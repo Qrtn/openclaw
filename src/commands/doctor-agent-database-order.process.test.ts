@@ -5,7 +5,10 @@ import { stripVTControlCharacters } from "node:util";
 import { afterAll, beforeAll, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../config/sessions/transcript-payload.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
 import {
@@ -324,17 +327,15 @@ it.for(["current", "historical-v1", "lost-journal"] as const)(
             .prepare("SELECT session_key, entry_json FROM session_nodes ORDER BY session_key")
             .all(),
         ),
-        transcript: readDatabase(
-          customDatabasePath,
-          (database) =>
-            executeSqliteQuerySync(
-              database,
-              getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
-                .selectFrom("transcript_events")
-                .select(transcriptEventJsonSql(database).as("event_json"))
-                .where("session_id", "=", sessionId)
-                .orderBy("seq"),
-            ).rows,
+        transcript: readDatabase(customDatabasePath, (database) =>
+          executeSqliteQuerySync(
+            database,
+            getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
+              .selectFrom("transcript_events")
+              .select(transcriptPayloadColumns(database))
+              .where("session_id", "=", sessionId)
+              .orderBy("seq"),
+          ).rows.map((row) => ({ event_json: readSelectedTranscriptPayload(database, row) })),
         ),
       });
       const migrated = readPersistedState();

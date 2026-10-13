@@ -25,7 +25,7 @@ import type { SessionTranscriptAccessScope } from "./session-accessor.types.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import type { SessionLifecycleRevisionExpectation } from "./session-transcript-turn-lifecycle.types.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 import {
   assertOwnedTranscriptWriteCommit,
   SessionTranscriptWriterClaimReboundError,
@@ -53,14 +53,15 @@ export async function rewriteNativeTranscriptMessageAtAnchor<TMessage>(
             database.db,
             getSessionKysely(database.db)
               .selectFrom("transcript_events")
-              .select(transcriptEventJsonSql(database.db).as("event_json"))
+              .select(transcriptPayloadColumns(database.db))
               .where("session_id", "=", resolved.sessionId)
               .where("seq", "=", anchor.rawSeq),
           );
           if (!row) {
             return null;
           }
-          const event = JSON.parse(row.event_json) as unknown;
+          const eventJson = readSelectedTranscriptPayload(database.db, row);
+          const event = JSON.parse(eventJson) as unknown;
           if (!isRecord(event) || event.type !== "message" || event.id !== anchor.entryId) {
             return null;
           }
@@ -71,7 +72,7 @@ export async function rewriteNativeTranscriptMessageAtAnchor<TMessage>(
           rewriteSqliteTranscriptEventRowsInTransaction(database, resolved, [
             {
               event: { ...event, message },
-              expectedEventJson: row.event_json,
+              expectedEventJson: eventJson,
               seq: anchor.rawSeq,
             },
           ]);

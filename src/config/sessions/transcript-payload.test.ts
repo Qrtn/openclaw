@@ -25,7 +25,8 @@ import {
   prepareTranscriptPayloadForReuse,
   readTranscriptPayload,
   readTranscriptStorageEncoding,
-  transcriptEventJsonSql,
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
   transcriptEventModelBytesSql,
   transcriptEventModelNavigationSql,
   transcriptEventNavigationSql,
@@ -48,7 +49,7 @@ const nativeFixtureEvent =
 function createTable(database: DatabaseSync): void {
   // Deliberately omit production constraints so reads also exercise corrupted persisted records.
   database.exec(`CREATE TABLE transcript_events (
-    seq INTEGER PRIMARY KEY, event_json TEXT, event_zstd BLOB,
+    session_id TEXT DEFAULT 'selected', seq INTEGER PRIMARY KEY, event_json TEXT, event_zstd BLOB,
     event_utf8_bytes INTEGER, navigation_json TEXT,
     navigation_type TEXT, navigation_custom_type TEXT, navigation_display INTEGER NOT NULL DEFAULT 0,
     message_role TEXT, navigation_last_type TEXT, navigation_last_custom_type TEXT,
@@ -96,10 +97,11 @@ function readBody(database: DatabaseSync, seq: number, mode: "sql" | "row" = "sq
     );
     return row && readTranscriptPayload(row);
   }
-  return executeSqliteQueryTakeFirstSync(
+  const row = executeSqliteQueryTakeFirstSync(
     database,
-    query.select(transcriptEventJsonSql(database, "event").as("body")),
-  )?.body;
+    query.select(transcriptPayloadColumns(database, "event")),
+  );
+  return row && readSelectedTranscriptPayload(database, row);
 }
 
 function compressedRecord(bytes: Uint8Array, rawBytes = bytes.byteLength): PayloadFixture {
@@ -120,8 +122,7 @@ describe("transcript payload storage boundary", () => {
     const database = openNodeSqliteDatabase(":memory:");
     try {
       createTable(database);
-      database.exec(`ALTER TABLE transcript_events ADD COLUMN session_id TEXT;
-        ALTER TABLE transcript_events ADD COLUMN created_at INTEGER`);
+      database.exec(`ALTER TABLE transcript_events ADD COLUMN created_at INTEGER`);
       const write = createTranscriptEventInserter(database, "session");
       write({
         seq: 1,
@@ -192,8 +193,7 @@ describe("transcript payload storage boundary", () => {
       } finally {
         observation.restore();
       }
-      target.exec(`ALTER TABLE transcript_events ADD COLUMN session_id TEXT;
-        ALTER TABLE transcript_events ADD COLUMN created_at INTEGER`);
+      target.exec(`ALTER TABLE transcript_events ADD COLUMN created_at INTEGER`);
       const eventJson = `{"type":"custom","id":"first","id":"last","data":"${"fixture".repeat(1024)}"}`;
       const prepared = prepareTranscriptPayloadForReuse(source, eventJson);
       expect(prepared.storageEncoding).toBe(sourceEncoding);
@@ -443,7 +443,7 @@ describe("transcript payload storage boundary", () => {
                   .selectFrom("transcript_events")
                   .select((eb) =>
                     projectModelContextEventSql(
-                      transcriptEventJsonSql(database),
+                      sql.val(readBody(database, seq)!),
                       eb.val(omitCheckpoint),
                       omission,
                       eb.fn("json_extract", [
@@ -520,8 +520,7 @@ describe("transcript payload storage boundary", () => {
       for (const [index, message] of messages.entries()) {
         insert(database, index + 1, prepareTranscriptPayload(database, JSON.stringify(message)));
       }
-      database.exec(`ALTER TABLE transcript_events ADD COLUMN session_id TEXT DEFAULT 'selected';
-        CREATE TABLE session_transcript_active_events (
+      database.exec(`CREATE TABLE session_transcript_active_events (
           session_id TEXT, event_seq INTEGER, message_position INTEGER
         );
         INSERT INTO session_transcript_active_events VALUES ('selected', 0, 0), ('selected', 1, 1), ('selected', 2, 2)`);
@@ -540,28 +539,25 @@ describe("transcript payload storage boundary", () => {
     }
   });
 
-  it("registers on fresh read-only connections but refuses schema-triggered decoding", () => {
+  it("reads compressed payloads on fresh read-only connections without SQL function registration", () => {
     const filename = path.join(tempDirs.make("transcript-payload-"), "payload.sqlite");
     const writer = openNodeSqliteDatabase(filename);
     const original = `{"type":"custom","data":"${"fixture".repeat(512)}"}`;
     try {
       createTable(writer);
       insert(writer, 1, prepareTranscriptPayload(writer, original));
-      const body = transcriptEventJsonSql(writer).compile(getNodeSqliteKysely(writer));
-      writer.exec(
-        `CREATE VIEW decoded_payload AS SELECT ${body.sql} AS body FROM transcript_events`,
-      );
-      expect(() => writer.prepare("SELECT * FROM decoded_payload").get()).toThrow();
     } finally {
       writer.close();
     }
     const reader = openNodeSqliteDatabase(filename, { readOnly: true });
+    const register = vi.spyOn(reader, "function");
     try {
       reader.exec("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF");
       expect(readBody(reader, 1)).toBe(original);
       expect(readBody(reader, 1, "row")).toBe(original);
-      expect(() => reader.prepare("SELECT * FROM decoded_payload").get()).toThrow();
+      expect(register).not.toHaveBeenCalled();
     } finally {
+      register.mockRestore();
       reader.close();
     }
   });

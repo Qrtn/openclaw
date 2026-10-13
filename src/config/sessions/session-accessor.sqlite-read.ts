@@ -63,9 +63,10 @@ import {
   resolveSqliteSessionTranscriptReadFence,
 } from "./session-transcript-read-fence.js";
 import {
-  transcriptEventJsonSql,
+  readSelectedTranscriptPayload,
   transcriptEventNavigationSql,
   transcriptEventResetNavigationSql,
+  transcriptPayloadColumns,
 } from "./transcript-payload.js";
 
 export type SqliteTranscriptSnapshotRow = {
@@ -371,13 +372,13 @@ export function readTranscriptEventAtSeqInTransaction(
     database.db,
     getSessionKysely(database.db)
       .selectFrom("transcript_events")
-      .select([transcriptEventJsonSql(database.db).as("event_json"), "seq"])
+      .select([...transcriptPayloadColumns(database.db), "seq"])
       .where("session_id", "=", sessionId)
       .where("seq", "=", seq),
   );
   return row
     ? {
-        event: JSON.parse(row.event_json) as TranscriptEvent,
+        event: JSON.parse(readSelectedTranscriptPayload(database.db, row)) as TranscriptEvent,
         seq: sqliteNumber(row.seq),
       }
     : undefined;
@@ -430,19 +431,29 @@ export function loadTranscriptEventsFromDatabase(
   } = {},
 ): TranscriptEvent[] {
   return readHotSessionTranscriptSnapshot(database, sessionId, "events", () => {
+    const query = prepareTranscriptEventReadQuery(database, sessionId, options).orderBy(
+      "seq",
+      "asc",
+    );
+    if (options.projection === "reset-boundary") {
+      return Array.from(
+        iterateSqliteQuerySync(
+          database.db,
+          query.select(transcriptEventResetNavigationSql().as("event_json")),
+        ),
+        (row) => {
+          const event: TranscriptEvent = JSON.parse(row.event_json);
+          return options.projectEvent ? options.projectEvent(event) : event;
+        },
+      );
+    }
     const rows = iterateSqliteQuerySync(
       database.db,
-      prepareTranscriptEventReadQuery(database, sessionId, options)
-        .select([
-          options.projection === "reset-boundary"
-            ? transcriptEventResetNavigationSql().as("event_json")
-            : transcriptEventJsonSql(database.db).as("event_json"),
-        ])
-        .orderBy("seq", "asc"),
+      query.select(transcriptPayloadColumns(database.db)),
     );
     // Array.from closes the iterator on parse failure; no live cursor escapes a fenced read.
     return Array.from(rows, (row) => {
-      const event: TranscriptEvent = JSON.parse(row.event_json);
+      const event: TranscriptEvent = JSON.parse(readSelectedTranscriptPayload(database.db, row));
       return options.projectEvent ? options.projectEvent(event) : event;
     });
   });
@@ -471,13 +482,13 @@ export function readTranscriptEventRows(
       database.db,
       db
         .selectFrom("transcript_events")
-        .select([transcriptEventJsonSql(database.db).as("event_json"), "seq"])
+        .select([...transcriptPayloadColumns(database.db), "seq"])
         .where("session_id", "=", sessionId)
         .$if(options.afterSeq !== undefined, (query) => query.where("seq", ">", options.afterSeq!))
         .orderBy("seq", "asc"),
     ).rows;
     return rows.map((row) => ({
-      eventJson: row.event_json,
+      eventJson: readSelectedTranscriptPayload(database.db, row),
       seq: sqliteNumber(row.seq),
     }));
   });
@@ -494,13 +505,13 @@ export function readTranscriptStorageRows(
       database.db,
       db
         .selectFrom("transcript_events")
-        .select(["created_at", transcriptEventJsonSql(database.db).as("event_json"), "seq"])
+        .select(["created_at", ...transcriptPayloadColumns(database.db), "seq"])
         .where("session_id", "=", sessionId)
         .orderBy("seq", "asc"),
     ).rows;
     return rows.map((row) => ({
       createdAt: sqliteNumber(row.created_at),
-      eventJson: row.event_json,
+      eventJson: readSelectedTranscriptPayload(database.db, row),
       seq: sqliteNumber(row.seq),
     }));
   });
@@ -578,13 +589,25 @@ export function findTranscriptEventInDatabase(
     const events = getSessionKysely(database.db)
       .selectFrom("transcript_events")
       .where("session_id", "=", sessionId);
-    const selection = navigationMatch
-      ? transcriptEventNavigationSql()
-      : transcriptEventJsonSql(database.db);
+    if (!navigationMatch) {
+      for (const row of iterateSqliteQuerySync(
+        database.db,
+        events.select(transcriptPayloadColumns(database.db)).orderBy("seq", "desc"),
+      )) {
+        const found = findTranscriptEventInRows(
+          [{ event_json: readSelectedTranscriptPayload(database.db, row) }],
+          match,
+        );
+        if (found) {
+          return found;
+        }
+      }
+      return undefined;
+    }
     for (const row of iterateSqliteQuerySync(
       database.db,
       events
-        .select(["seq", selection.as("event_json")])
+        .select(["seq", transcriptEventNavigationSql().as("event_json")])
         .select((eb) => eb("navigation_json", "is not", null).as("projected"))
         .orderBy("seq", "desc"),
     )) {
@@ -596,12 +619,13 @@ export function findTranscriptEventInDatabase(
       const payload = prefilter
         ? executeSqliteQueryTakeFirstSync(
             database.db,
-            events
-              .select(transcriptEventJsonSql(database.db).as("event_json"))
-              .where("seq", "=", row.seq),
+            events.select(transcriptPayloadColumns(database.db)).where("seq", "=", row.seq),
           )
-        : row;
-      const found = payload && findTranscriptEventInRows([payload], match);
+        : undefined;
+      const eventJson = prefilter
+        ? payload && readSelectedTranscriptPayload(database.db, payload)
+        : row.event_json;
+      const found = eventJson && findTranscriptEventInRows([{ event_json: eventJson }], match);
       if (found) {
         return found;
       }

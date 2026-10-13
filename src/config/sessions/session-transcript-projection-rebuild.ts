@@ -26,7 +26,11 @@ import {
 } from "./session-transcript-projection-append.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { projectTranscriptNavigationFields } from "./transcript-navigation-fields.js";
-import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  transcriptEventNavigationSql,
+} from "./transcript-payload.js";
 import {
   isCanonicalSessionTranscriptEntry,
   scanSessionTranscriptTree,
@@ -156,7 +160,7 @@ function readProjectionSource(
   }
   const query = kysely
     .selectFrom("transcript_events")
-    .select([transcriptEventJsonSql(db).as("event_json"), "seq", "created_at"])
+    .select([...transcriptPayloadColumns(db), "seq", "created_at"])
     .where("session_id", "=", sessionId);
   const read = prepareSqliteQuerySync<number, InferResult<typeof query>[number]>(db, (parameter) =>
     query.where(
@@ -170,16 +174,33 @@ function readProjectionSource(
     transcriptGeneration: session.generation,
     transcriptUpdatedAt: session.transcript_updated_at,
     rows: (navigationOnly) =>
-      iterateSqliteQuerySync(
-        db,
-        (navigationOnly
-          ? query
+      navigationOnly
+        ? iterateSqliteQuerySync(
+            db,
+            query
               .clearSelect()
               .select([transcriptEventNavigationSql().as("event_json"), "seq", "created_at"])
-          : query
-        ).orderBy("seq", "asc"),
-      ),
-    row: (seq) => read(seq).rows[0],
+              .orderBy("seq", "asc"),
+          )
+        : (function* () {
+            for (const row of iterateSqliteQuerySync(db, query.orderBy("seq", "asc"))) {
+              yield {
+                seq: row.seq,
+                created_at: row.created_at,
+                event_json: readSelectedTranscriptPayload(db, row),
+              };
+            }
+          })(),
+    row: (seq) => {
+      const row = read(seq).rows[0];
+      return row
+        ? {
+            seq: row.seq,
+            created_at: row.created_at,
+            event_json: readSelectedTranscriptPayload(db, row),
+          }
+        : undefined;
+    },
   };
 }
 
@@ -483,7 +504,7 @@ function prepareProjectionTailCatchUp(
     db,
     getProjectionKysely(db)
       .selectFrom("transcript_events")
-      .select([transcriptEventJsonSql(db).as("event_json"), "seq", "created_at"])
+      .select([...transcriptPayloadColumns(db), "seq", "created_at"])
       .where("session_id", "=", plan.sessionId)
       .where("seq", ">", plan.sourceIndexedSeq)
       .where("seq", "<=", latestSeq)
@@ -498,7 +519,7 @@ function prepareProjectionTailCatchUp(
     leafEventId: plan.leafEventId,
   };
   for (const row of rows) {
-    const event: unknown = JSON.parse(row.event_json);
+    const event: unknown = JSON.parse(readSelectedTranscriptPayload(db, row));
     if (isCanonicalSessionTranscriptEntry(event) && event.type === "reset") {
       return undefined;
     }

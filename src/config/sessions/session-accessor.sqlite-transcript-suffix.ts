@@ -33,8 +33,10 @@ import {
 } from "./session-transcript-index.js";
 import { scheduleTranscriptProjectionReconcile } from "./session-transcript-reconcile.js";
 import {
-  projectTranscriptRetainedDataSql,
+  readTranscriptRetainedDataPayload,
   stageRetainedTranscriptData,
+  transcriptRetainedDataColumns,
+  transcriptRetainedDataBytesSql,
 } from "./session-transcript-retained-data.js";
 import {
   prepareFullTranscriptSuffixMutation,
@@ -42,7 +44,7 @@ import {
 } from "./session-transcript-suffix-projection.js";
 import { canonicalizeTranscriptEventMedia } from "./transcript-event-media.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
-import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
+import { transcriptEventNavigationSql } from "./transcript-payload.js";
 import {
   isSessionTranscriptLeafControl,
   parseSessionTranscriptTreeEntry,
@@ -73,23 +75,31 @@ function readTranscriptSuffixStorageRows(
   expectedRows: number,
   retainedCustomDataIds: readonly string[],
 ): SqliteTranscriptStorageRow[] {
+  const base = getSessionKysely(database.db)
+    .selectFrom("transcript_events")
+    .where("session_id", "=", sessionId)
+    .where("seq", ">=", startSeq)
+    .orderBy("seq", "asc")
+    .limit(expectedRows + 1);
+  const metadata = executeSqliteQuerySync(
+    database.db,
+    base.select(transcriptRetainedDataBytesSql(retainedCustomDataIds).as("bytes")),
+  ).rows;
+  if (metadata.reduce((bytes, row) => bytes + row.bytes, 0) > SYNC_REBUILD_MAX_BYTES) {
+    throw new Error(`Transcript suffix exceeds synchronous planning byte limit for ${sessionId}`);
+  }
   return executeSqliteQuerySync(
     database.db,
-    getSessionKysely(database.db)
-      .selectFrom("transcript_events")
-      .select([
-        "created_at",
-        projectTranscriptRetainedDataSql(
-          transcriptEventJsonSql(database.db),
-          retainedCustomDataIds,
-        ).as("event_json"),
-        "seq",
-      ])
-      .where("session_id", "=", sessionId)
-      .where("seq", ">=", startSeq)
-      .orderBy("seq", "asc")
-      .limit(expectedRows + 1),
-  ).rows.map((row) => ({ createdAt: row.created_at, eventJson: row.event_json, seq: row.seq }));
+    base.select([
+      "created_at",
+      ...transcriptRetainedDataColumns(database.db, retainedCustomDataIds),
+      "seq",
+    ]),
+  ).rows.map((row) => ({
+    createdAt: row.created_at,
+    eventJson: readTranscriptRetainedDataPayload(database.db, row, retainedCustomDataIds),
+    seq: row.seq,
+  }));
 }
 
 function prepareIncrementalTranscriptSuffixMutation(

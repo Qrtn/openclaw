@@ -7,7 +7,12 @@ import {
   projectSessionBranchEntry,
   type SessionBranchTranscriptEntry,
 } from "./session-message-cut-content.js";
-import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptEventNavigationSql,
+  transcriptPayloadColumns,
+  type SelectedTranscriptPayload,
+} from "./transcript-payload.js";
 import {
   isCanonicalSessionTranscriptEntry,
   scanSessionTranscriptTree,
@@ -41,12 +46,12 @@ export function readSessionBranchSummaries(
     )
     .where("session_id", "=", sessionId)
     .orderBy("seq", "asc");
-  const readCandidate = prepareSqliteQuerySync<number, { event_json: string }>(
+  const readCandidate = prepareSqliteQuerySync<number, SelectedTranscriptPayload>(
     database.db,
     (parameter) =>
       db
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(database.db).as("event_json"))
+        .select(transcriptPayloadColumns(database.db))
         .where("session_id", "=", sessionId)
         .where(
           "seq",
@@ -60,7 +65,9 @@ export function readSessionBranchSummaries(
     if (!row) {
       throw new Error("Branch headline row is missing from the transcript snapshot");
     }
-    return extractSessionBranchHeadline(JSON.parse(row.event_json));
+    return extractSessionBranchHeadline(
+      JSON.parse(readSelectedTranscriptPayload(database.db, row)),
+    );
   };
   const active = previous?.branches.find((branch) => branch.active);
   if (previous?.appendSafe && previous.maxSeq !== null && active) {

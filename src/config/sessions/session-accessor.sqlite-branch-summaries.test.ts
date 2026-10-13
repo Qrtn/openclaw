@@ -416,7 +416,7 @@ it("reads only the newest usable appended headline while retaining cached histor
   }
   const tracked = trackSqliteStatementExecutions(database.db, ["headlines"], (sqlText) =>
     sqlText.includes('from "transcript_events"') &&
-    sqlText.includes('as "event_json"') &&
+    sqlText.includes('as "event_data"') &&
     sqlText.includes('"seq" = ?')
       ? "headlines"
       : null,
@@ -430,7 +430,7 @@ it("reads only the newest usable appended headline while retaining cached histor
       ],
     });
     expect(tracked.counts.headlines).toBe(3);
-    expect(tracked.textBytes.headlines).toBeLessThan(1_000);
+    expect(tracked.textBytes.headlines + tracked.blobBytes.headlines).toBeLessThan(1_000);
   } finally {
     tracked.restore();
   }
@@ -476,7 +476,7 @@ it("uses one snapshot for navigation and lazy headline reads", async () => {
           if (
             !changed &&
             sqlText.includes('from "transcript_events"') &&
-            sqlText.includes('as "event_json"') &&
+            sqlText.includes('as "event_data"') &&
             sqlText.includes('"seq" = ?')
           ) {
             changed = true;

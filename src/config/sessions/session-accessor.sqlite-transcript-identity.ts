@@ -7,7 +7,7 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 export function createTranscriptIdentityInserter(
   database: OpenClawAgentDatabase,
@@ -76,7 +76,7 @@ export function readTranscriptMessageByIdentity(
     database.db,
     db
       .selectFrom("transcript_events")
-      .select(transcriptEventJsonSql(database.db).as("event_json"))
+      .select(transcriptPayloadColumns(database.db))
       .where("session_id", "=", scope.sessionId)
       .where("seq", "=", identity.seq),
   );
@@ -84,7 +84,9 @@ export function readTranscriptMessageByIdentity(
     return undefined;
   }
   // SAFETY: Identity rows are created only for canonical object events; message stays unknown.
-  const event = JSON.parse(eventRow.event_json) as { message?: unknown };
+  const event = JSON.parse(readSelectedTranscriptPayload(database.db, eventRow)) as {
+    message?: unknown;
+  };
   return { messageId: identity.eventId, message: event.message };
 }
 

@@ -7,7 +7,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope-helpers.js";
 import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-read.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 export function loadTranscriptEventRowsAfterSeqInDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
@@ -18,12 +18,12 @@ export function loadTranscriptEventRowsAfterSeqInDatabase(
     const db = getSessionKysely(database.db);
     const query = db
       .selectFrom("transcript_events")
-      .select([transcriptEventJsonSql(database.db).as("event_json"), "seq"])
+      .select([...transcriptPayloadColumns(database.db), "seq"])
       .where("session_id", "=", sessionId)
       .where("seq", ">", afterSeq);
     return executeSqliteQuerySync(database.db, query.orderBy("seq", "asc")).rows.map((row) => ({
       // SAFETY: Transcript writers persist TranscriptEvent JSON in the selected event column.
-      event: JSON.parse(row.event_json) as TranscriptEvent,
+      event: JSON.parse(readSelectedTranscriptPayload(database.db, row)) as TranscriptEvent,
       seq: sqliteNumber(row.seq),
     }));
   });

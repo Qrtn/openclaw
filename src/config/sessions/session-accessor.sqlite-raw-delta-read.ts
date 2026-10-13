@@ -20,7 +20,7 @@ import {
   resolveSqliteSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 /** Read inside the caller's validated projection snapshot on its exact connection. */
 export function readTranscriptRawDeltaFromProjection(
@@ -141,12 +141,12 @@ export function readRawDeltaInTransaction(
       : executeSqliteQuerySync(
           database,
           transcript
-            .select([transcriptEventJsonSql(database).as("event_json"), "seq"])
+            .select(["seq", ...transcriptPayloadColumns(database)])
             .where("seq", ">", cursor.lastSeq)
             .where("seq", "<=", lastSeq)
             .orderBy("seq", "asc"),
         ).rows.map((row) => ({
-          event: JSON.parse(row.event_json),
+          event: JSON.parse(readSelectedTranscriptPayload(database, row)),
           seq: sqliteNumber(row.seq),
         }));
   const nextCursor = encodeRawTranscriptCursor({ ...cursor, lastSeq });

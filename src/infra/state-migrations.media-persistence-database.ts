@@ -4,13 +4,17 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
 import type { TranscriptEvent } from "../config/sessions/session-accessor.sqlite-contract.js";
 import { rewriteSqliteTranscriptEventRowsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../config/sessions/transcript-payload.js";
 import {
   canonicalizePersistedUserMessageMedia,
   hasMeaningfulRetiredMediaCarrier,
 } from "../media/media-facts.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { engineTextByteSliceSql } from "./database-engine/text-bytes.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import {
   parseTranscriptEvent,
@@ -31,16 +35,22 @@ function forEachMediaEventBatch(params: {
   visit: (rows: Array<{ event_json: string; seq: number; session_id: string }>) => "stop" | void;
 }): void {
   const db = getNodeSqliteKysely<MediaMigrationDatabase>(params.database);
-  const eventJson =
-    params.table === "transcript_events" && !params.legacyTextStorage
-      ? transcriptEventJsonSql(params.database)
-      : sql.ref<string>(`${params.table}.event_json`); // kysely-allow-raw: private TEXT-table union.
+  const payloadColumns = params.legacyTextStorage
+    ? [
+        engineTextByteSliceSql(params.database, sql.ref<string>("event_json"), 1, 64 * 1024).as(
+          "event_data",
+        ),
+        sql<Uint8Array | null>`NULL`.as("event_zstd"), // kysely-allow-raw: pre22 schema stores only identity TEXT.
+        sql<number | null>`NULL`.as("event_utf8_bytes"), // kysely-allow-raw: pre22 schema has no payload byte metadata.
+        sql.ref<string>("session_id").as("payload_session_id"),
+        sql.ref<number>("seq").as("payload_seq"),
+      ]
+    : transcriptPayloadColumns(params.database);
   let cursor: { seq: number; sessionId: string } | undefined;
   while (true) {
     let query = db
       .selectFrom(params.table)
       .select(["session_id", "seq"])
-      .select(eventJson.as("event_json"))
       .orderBy("session_id", "asc")
       .orderBy("seq", "asc")
       .limit(MEDIA_MIGRATION_ROW_BATCH_SIZE);
@@ -56,7 +66,20 @@ function forEachMediaEventBatch(params: {
         ),
       );
     }
-    const rows = executeSqliteQuerySync(params.database, query).rows;
+    const rows =
+      params.table === "transcript_events"
+        ? executeSqliteQuerySync(params.database, query.select(payloadColumns)).rows.map((row) => ({
+            session_id: row.session_id,
+            seq: row.seq,
+            event_json: readSelectedTranscriptPayload(params.database, row),
+          }))
+        : executeSqliteQuerySync(
+            params.database,
+            query.select(
+              // kysely-allow-raw: trajectory events retain required identity TEXT.
+              sql.ref<string>("event_json").as("event_json"),
+            ),
+          ).rows;
     const last = rows.at(-1);
     if (!last) {
       return;

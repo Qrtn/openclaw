@@ -2,7 +2,10 @@ import fs from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { updateSqliteTranscriptEventJsonInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "../config/sessions/transcript-payload.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db-contract.js";
 import {
@@ -151,7 +154,7 @@ function listTranscriptSessionBatch(database: DatabaseSync, afterSessionId: stri
       .select("session_id")
       .distinct()
       .where("session_id", ">", afterSessionId)
-      .where(transcriptEventJsonSql(database), "like", "%[[%")
+      .where((eb) => eb.or([eb("event_json", "like", "%[[%"), eb("event_json", "is", null)]))
       .orderBy("session_id", "asc")
       .limit(TRANSCRIPT_DIRECTIVE_MIGRATION_BATCH_SIZE),
   ).rows.map((row) => row.session_id);
@@ -159,15 +162,33 @@ function listTranscriptSessionBatch(database: DatabaseSync, afterSessionId: stri
 
 function readTranscriptSessionRows(database: DatabaseSync, sessionId: string) {
   const db = getNodeSqliteKysely<TranscriptDirectiveMigrationDatabase>(database);
-  return executeSqliteQuerySync(
-    database,
-    db
-      .selectFrom("transcript_events")
-      .select([transcriptEventJsonSql(database).as("event_json"), "seq"])
-      .where("session_id", "=", sessionId)
-      .where(transcriptEventJsonSql(database), "like", "%[[%")
-      .orderBy("seq", "asc"),
-  ).rows;
+  const rows: Array<{ event_json: string; seq: number }> = [];
+  let afterSeq: number | undefined;
+  // This historical repair owns the content predicate; compressed candidates are bounded pages.
+  // Identity matching stays on the server, including SQLite's embedded-NUL LIKE behavior.
+  while (true) {
+    const page = executeSqliteQuerySync(
+      database,
+      db
+        .selectFrom("transcript_events")
+        .select(transcriptPayloadColumns(database))
+        .where("session_id", "=", sessionId)
+        .where((eb) => eb.or([eb("event_json", "like", "%[[%"), eb("event_json", "is", null)]))
+        .$if(afterSeq !== undefined, (query) => query.where("seq", ">", afterSeq!))
+        .orderBy("seq", "asc")
+        .limit(TRANSCRIPT_DIRECTIVE_MIGRATION_BATCH_SIZE),
+    ).rows;
+    for (const row of page) {
+      const eventJson = readSelectedTranscriptPayload(database, row);
+      if (row.event_data !== null || eventJson.includes("[[")) {
+        rows.push({ event_json: eventJson, seq: row.payload_seq });
+      }
+    }
+    if (page.length < TRANSCRIPT_DIRECTIVE_MIGRATION_BATCH_SIZE) {
+      return rows;
+    }
+    afterSeq = page.at(-1)!.payload_seq;
+  }
 }
 
 function planTranscriptSession(

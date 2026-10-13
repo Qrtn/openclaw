@@ -35,7 +35,11 @@ import { readCacheTtlProjectionPrefix } from "./session-cache-ttl-prefix.js";
 import { isIndexedSessionEntry } from "./session-entry-codec.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
-import { transcriptEventJsonSql, transcriptEventResetNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  transcriptEventResetNavigationSql,
+} from "./transcript-payload.js";
 import { assertTranscriptNavigationValid } from "./transcript-predicate-fields.js";
 
 function readBoundedRetentionRanges(
@@ -436,10 +440,13 @@ export function readSessionTranscriptBoundedActiveContextCore(
         : executeSqliteQuerySync(
             projection.database.db,
             transcript
-              .select(["seq", transcriptEventJsonSql(projection.database.db).as("event_json")])
+              .select(["seq", ...transcriptPayloadColumns(projection.database.db)])
               .where("seq", "in", payloadSequences),
           ).rows
-      ).map((row) => [row.seq, JSON.parse(row.event_json)]),
+      ).map((row) => [
+        row.seq,
+        JSON.parse(readSelectedTranscriptPayload(projection.database.db, row)),
+      ]),
     );
     // Retain logical ancestry across the byte cutoff without loading parent payloads.
     // Raw parent_id can point into an abandoned branch after a leaf control.

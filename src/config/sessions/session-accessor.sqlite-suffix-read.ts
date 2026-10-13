@@ -24,10 +24,11 @@ import {
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
 import {
-  projectTranscriptRetainedDataSql,
+  readTranscriptRetainedDataPayload,
+  transcriptRetainedDataColumns,
   transcriptRetainedDataBytesSql,
 } from "./session-transcript-retained-data.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 /** Native adapter for the deprecated synchronous manager and process-held incognito. */
 export function loadTranscriptSuffixEventsBoundedSync(
@@ -115,10 +116,7 @@ export function loadTranscriptSuffixEventsBoundedFromDatabase(
         db
           .selectFrom("transcript_events")
           .select([
-            projectTranscriptRetainedDataSql(
-              transcriptEventJsonSql(database.db),
-              limits.retainedCustomDataIds ?? [],
-            ).as("event_json"),
+            ...transcriptRetainedDataColumns(database.db, limits.retainedCustomDataIds ?? []),
             "seq",
           ])
           .where("session_id", "=", resolved.sessionId)
@@ -130,7 +128,12 @@ export function loadTranscriptSuffixEventsBoundedFromDatabase(
           .orderBy("seq", "asc"),
       ).rows;
       // SAFETY: Raw transcript rows are parsed through the persisted transcript event union.
-      return rows.map((row) => JSON.parse(row.event_json) as TranscriptEvent);
+      return rows.map(
+        (row) =>
+          JSON.parse(
+            readTranscriptRetainedDataPayload(database.db, row, limits.retainedCustomDataIds ?? []),
+          ) as TranscriptEvent,
+      );
     },
     {
       databaseLabel: database.path,
@@ -163,10 +166,7 @@ export function readPreviousIndexedTranscriptEventSync(
               .onRef("event.session_id", "=", "identity.session_id")
               .onRef("event.seq", "=", "identity.seq"),
           )
-          .select([
-            transcriptEventJsonSql(projection.database.db, "event").as("event_json"),
-            "identity.seq",
-          ])
+          .select([...transcriptPayloadColumns(projection.database.db, "event"), "identity.seq"])
           .where("identity.session_id", "=", projection.resolved.sessionId)
           .where("identity.seq", "<", beforeSeq)
           .orderBy("active.active_position", "desc")
@@ -175,7 +175,9 @@ export function readPreviousIndexedTranscriptEventSync(
       return row
         ? {
             // SAFETY: Indexed transcript rows contain the persisted transcript event union.
-            event: JSON.parse(row.event_json) as TranscriptEvent,
+            event: JSON.parse(
+              readSelectedTranscriptPayload(projection.database.db, row),
+            ) as TranscriptEvent,
             seq: sqliteNumber(row.seq),
           }
         : undefined;

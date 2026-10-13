@@ -1,7 +1,11 @@
+import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql, type AliasableExpression } from "kysely";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+} from "../../infra/kysely-sync.js";
 import {
   sqliteSessionIdWriteScope,
   withSqliteDatabaseWriteScope,
@@ -13,9 +17,11 @@ import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { readNextTranscriptSeq } from "./session-accessor.sqlite-transcript-state.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import {
-  transcriptEventJsonSql,
+  readTranscriptPayload,
   transcriptEventNavigationSql,
   transcriptEventWithoutCustomDataBytesSql,
+  transcriptPayloadColumns,
+  type TranscriptPayloadRecord,
 } from "./transcript-payload.js";
 
 /** Admit suffix repairs against their projected bytes without decoding opaque bodies. */
@@ -32,7 +38,7 @@ export function transcriptRetainedDataBytesSql(retainedIds: readonly string[]) {
 }
 
 /** Custom data is opaque to topology and indexing; cleanup keeps it in SQLite. */
-export function projectTranscriptRetainedDataSql(
+function projectTranscriptRetainedDataSql(
   event: AliasableExpression<string>,
   retainedIds: readonly string[],
 ): AliasableExpression<string> {
@@ -43,6 +49,41 @@ export function projectTranscriptRetainedDataSql(
           AND json_extract(${event}, '$.id') IN (${sql.join(retainedIds)})
         THEN json_remove(${event}, '$.data') ELSE ${event} END
       ELSE ${event} END`;
+}
+
+/** Identity data stays server-side; compressed data is bounded before its native projection. */
+export function transcriptRetainedDataColumns(
+  database: DatabaseSync,
+  retainedIds: readonly string[],
+) {
+  const [, compressed, bytes] = transcriptPayloadColumns(database);
+  return [
+    /* kysely-allow-raw: select the projected identity and bounded canonical compressed source. */
+    projectTranscriptRetainedDataSql(
+      sql.ref<string>("transcript_events.event_json"),
+      retainedIds,
+    ).as("event_json"),
+    compressed,
+    bytes,
+  ] as const;
+}
+
+export function readTranscriptRetainedDataPayload(
+  database: DatabaseSync,
+  row: Pick<TranscriptPayloadRecord, "event_json" | "event_zstd" | "event_utf8_bytes">,
+  retainedIds: readonly string[],
+): string {
+  const eventJson = readTranscriptPayload(row);
+  if (row.event_json !== null || retainedIds.length === 0) {
+    return eventJson;
+  }
+  // The native projection keeps first-member lookup and duplicate-member preservation.
+  return executeSqliteQueryTakeFirstSync(
+    database,
+    getSessionKysely(database).selectNoFrom(
+      projectTranscriptRetainedDataSql(sql.val(eventJson), retainedIds).as("event_json"),
+    ),
+  )!.event_json;
 }
 
 /** Stage opaque payloads inside the same transaction before their old suffix rows are removed. */
@@ -117,6 +158,23 @@ export function copyRetainedTranscriptPayload(
   parentId?: string | null,
 ): void {
   const db = getSessionKysely(database.db);
+  const [, compressed, bytes] = transcriptPayloadColumns(database.db);
+  const compressedSource =
+    parentId === undefined
+      ? undefined
+      : executeSqliteQueryTakeFirstSync(
+          database.db,
+          db
+            .selectFrom("transcript_events")
+            .select(["event_json", compressed, bytes])
+            .where("session_id", "=", sessionId)
+            .where("seq", "=", sourceSeq)
+            .where("event_json", "is", null),
+        );
+  const parentSource = compressedSource
+    ? sql.val(readTranscriptPayload(compressedSource))
+    : /* kysely-allow-raw: identity data stays inside the row-to-row copy. */
+      sql.ref<string>("event_json");
   const copied = withSqliteDatabaseWriteScope(
     database.db,
     [sqliteSessionIdWriteScope(sessionId)],
@@ -148,7 +206,7 @@ export function copyRetainedTranscriptPayload(
                 const eventJson: AliasableExpression<string | null> =
                   parentId === undefined
                     ? eb.ref("event_json")
-                    : /* kysely-allow-raw: reparent only the envelope; oversized identity data stays in SQLite. */ sql<string>`json_set(${transcriptEventJsonSql(database.db)}, '$.parentId', ${parentId})`;
+                    : /* kysely-allow-raw: reparent only the envelope; oversized identity data stays in SQLite. */ sql<string>`json_set(${parentSource}, '$.parentId', ${parentId})`;
                 return [
                   eb.val(sessionId).as("session_id"),
                   eb.val(destinationSeq).as("seq"),

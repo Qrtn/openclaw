@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
-import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  type SelectedTranscriptPayload,
+} from "../config/sessions/transcript-payload.js";
 import { getNodeSqliteKysely, prepareSqliteQueryIterator } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { resolveTargetSqlitePath } from "../infra/session-sqlite-migration-readers.js";
@@ -111,10 +115,10 @@ async function main() {
     readOnly: true,
   });
   try {
-    const read = prepareSqliteQueryIterator<string, { event_json: string }>(db, (parameter) =>
+    const read = prepareSqliteQueryIterator<string, SelectedTranscriptPayload>(db, (parameter) =>
       getNodeSqliteKysely<Pick<DB, "transcript_events">>(db)
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(db).as("event_json"))
+        .select(transcriptPayloadColumns(db))
         .where(
           "session_id",
           "=",
@@ -125,7 +129,7 @@ async function main() {
     for (const [sessionId, digest] of expected) {
       const hash = createHash("sha256");
       for (const row of read(sessionId)) {
-        hash.update(row.event_json).update("\n");
+        hash.update(readSelectedTranscriptPayload(db, row)).update("\n");
       }
       assert.equal(hash.digest("hex"), digest);
       assert.deepEqual(

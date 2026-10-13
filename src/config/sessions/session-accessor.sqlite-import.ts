@@ -31,7 +31,7 @@ import {
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 import type { SessionEntry } from "./types.js";
 
 /** Internal doctor/migration import target for one legacy session row. */
@@ -144,10 +144,10 @@ function importSqliteSessionRowsInTransaction(
       database.db,
       getSessionKysely(database.db)
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(database.db).as("event_json"))
+        .select(transcriptPayloadColumns(database.db))
         .where("session_id", "=", params.entry.sessionId),
     )) {
-      stage.addSeen(row.event_json);
+      stage.addSeen(readSelectedTranscriptPayload(database.db, row));
     }
     transcriptEvents = appendTranscriptEventsInTransaction(
       database,

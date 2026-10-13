@@ -17,7 +17,11 @@ import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-read.js
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import { projectAssistantTranscriptText } from "./transcript-assistant-delivery-read.js";
-import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptEventNavigationSql,
+  transcriptPayloadColumns,
+} from "./transcript-payload.js";
 
 /** Checks physical message history without loading payloads covered by the identity index. */
 export function hasSessionTranscriptMessageInDatabase(
@@ -97,12 +101,12 @@ export function readTranscriptHeaderFromDatabase(
       database.db,
       db
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(database.db).as("event_json"))
+        .select(transcriptPayloadColumns(database.db))
         .where("session_id", "=", sessionId)
         .orderBy("seq", "asc")
         .limit(1),
     );
-    return row ? JSON.parse(row.event_json) : undefined;
+    return row ? JSON.parse(readSelectedTranscriptPayload(database.db, row)) : undefined;
   });
 }
 
@@ -127,14 +131,16 @@ export function readLatestAssistantTextFromDatabase(
           .innerJoin("transcript_event_identities as ti", (join) =>
             join.onRef("ti.session_id", "=", "te.session_id").onRef("ti.seq", "=", "te.seq"),
           )
-          .select(transcriptEventJsonSql(database.db, "te").as("event_json"))
+          .select(transcriptPayloadColumns(database.db, "te"))
           .where("te.session_id", "=", scope.sessionId)
           .where("ti.event_type", "=", "message")
           .$if(beforeEventSeq !== undefined, (query) => query.where("ti.seq", "<", beforeEventSeq!))
           .orderBy("ti.seq", "desc"),
       );
       for (const row of rows) {
-        const latest = parseLatestAssistantMessageEvent(row.event_json);
+        const latest = parseLatestAssistantMessageEvent(
+          readSelectedTranscriptPayload(database.db, row),
+        );
         if (!latest) {
           continue;
         }

@@ -1,8 +1,11 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import type { WorkerTaskControl } from "@openclaw/worker-runtime/worker";
 import { sql, type Expression } from "kysely";
+import { beginEngineStoreReadSnapshot } from "../../infra/database-engine/adapters.js";
+import { engineTextByteSliceSql } from "../../infra/database-engine/text-bytes.js";
 import {
-  iterateSqliteQuerySync,
+  executeSqliteQuerySync,
+  prepareSqliteQuerySync,
   prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { sqlitePrimaryResultCode } from "../../infra/sqlite-error-diagnostics.js";
@@ -22,11 +25,17 @@ import type {
   SessionTranscriptHydrationChunk,
   SessionTranscriptHydrationWorkerResult,
 } from "./session-transcript-worker.types.js";
-import { readTranscriptStorageEncoding, transcriptEventJsonSql } from "./transcript-payload.js";
+import {
+  MAX_COMPRESSED_EVENT_BYTES,
+  readCompressedTranscriptPayloadBytes,
+  readTranscriptStorageEncoding,
+} from "./transcript-payload.js";
 
 const SLICE_BYTES = 64 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
 const CHUNK_FRAMES = 128;
+// PostgreSQL buffers a page, so its first identity slices must fit one chunk.
+const PAGE_ROWS = CHUNK_BYTES / SLICE_BYTES;
 
 /** One task owns its snapshot through every acknowledged frame and native cleanup. */
 export async function streamSessionTranscriptHydration(
@@ -40,6 +49,7 @@ export async function streamSessionTranscriptHydration(
       throw new SessionTranscriptStorageUnavailableError(opened.reason);
     }
     const { database } = opened;
+    let snapshot: ReturnType<typeof beginEngineStoreReadSnapshot> | undefined;
     let outcome:
       | { value: Extract<SessionTranscriptHydrationWorkerResult, { kind: "full" }> }
       | { error: unknown };
@@ -47,8 +57,7 @@ export async function streamSessionTranscriptHydration(
       if (request.expectedIdentity) {
         assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
       }
-      // sqlite-allow-raw: This task's dedicated read-only handle keeps one snapshot across host ACKs.
-      database.db.exec("BEGIN DEFERRED");
+      snapshot = beginEngineStoreReadSnapshot(database.db);
       const fence = resolveSqliteSessionTranscriptReadFence({ database, ...request.resolvedScope });
       const { version, coldArchive } = readTranscriptContextStateInTransaction(
         database,
@@ -62,20 +71,50 @@ export async function streamSessionTranscriptHydration(
         ...request.target,
         beforeEventSeq: fence?.beforeRawSeq,
       }).$if(request.afterSeq !== undefined, (query) => query.where("seq", ">", request.afterSeq!));
+      // kysely-allow-raw: This fixed column is the canonical identity payload, never a dynamic identifier.
+      const identity = sql.ref<string | null>("event_json");
       const eventSlice = (offset: number | Expression<number>) =>
-        /* kysely-allow-raw: Slice database-encoded canonical bytes natively so identity TEXT never enters JS whole. */
-        sql<Uint8Array>`substr(CAST(${transcriptEventJsonSql(database.db)} AS BLOB), ${offset}, ${SLICE_BYTES})`.as(
-          "data",
-        );
+        engineTextByteSliceSql(database.db, identity, offset, SLICE_BYTES).as("data");
+      const pageQuery = source
+        .select(["seq", eventSlice(1)])
+        .orderBy("seq", "asc")
+        .limit(PAGE_ROWS);
+      const readPage = prepareSqliteQuerySync<number, { seq: number; data: Uint8Array | null }>(
+        database.db,
+        (parameter) =>
+          pageQuery.where(
+            "seq",
+            ">",
+            parameter((seq) => seq),
+          ),
+      );
       const readPart = prepareSqliteQueryTakeFirstSync<
         { seq: number; offset: number },
-        { data: Uint8Array }
+        { data: Uint8Array | null }
       >(database.db, (parameter) =>
         source.select(eventSlice(parameter((value) => value.offset))).where(
           "seq",
           "=",
           parameter((value) => value.seq),
         ),
+      );
+      const readCompressed = prepareSqliteQueryTakeFirstSync<
+        number,
+        { event_zstd: Uint8Array | null; event_utf8_bytes: number | null }
+      >(database.db, (parameter) =>
+        source
+          .select([
+            "event_utf8_bytes",
+            // kysely-allow-raw: Refuse oversized compressed data before the database bridge copies it.
+            sql<Uint8Array | null>`CASE WHEN event_utf8_bytes BETWEEN 1 AND ${MAX_COMPRESSED_EVENT_BYTES}
+              AND octet_length(event_zstd) BETWEEN 1 AND ${MAX_COMPRESSED_EVENT_BYTES}
+              THEN event_zstd ELSE NULL END`.as("event_zstd"),
+          ])
+          .where(
+            "seq",
+            "=",
+            parameter((seq) => seq),
+          ),
       );
       let frames: SessionTranscriptHydrationChunk["frames"] = [];
       let bytes = 0;
@@ -94,34 +133,54 @@ export async function streamSessionTranscriptHydration(
         bytes = 0;
         control.throwIfCancelled();
       };
-      for (const row of iterateSqliteQuerySync(
-        database.db,
-        source.select(["seq", eventSlice(1)]).orderBy("seq", "asc"),
-      )) {
-        for (let offset = 1; ; offset += SLICE_BYTES) {
-          control.throwIfCancelled();
-          const data =
-            offset === 1
-              ? row.data
-              : expectDefined(readPart({ seq: row.seq, offset }), "transcript snapshot row").data;
-          if (bytes + data.byteLength > CHUNK_BYTES) {
-            await flush();
-          }
-          const endOfEvent = data.byteLength < SLICE_BYTES;
-          frames.push({
-            data,
-            endOfEvent,
-            ...(request.includeEventJson && endOfEvent ? { seq: row.seq } : {}),
-          });
-          bytes += data.byteLength;
-          if (bytes >= CHUNK_BYTES || frames.length >= CHUNK_FRAMES) {
-            await flush();
-          }
-          if (endOfEvent) {
-            eventCount++;
-            break;
+      let afterSeq = request.afterSeq;
+      for (;;) {
+        control.throwIfCancelled();
+        const page =
+          afterSeq === undefined
+            ? executeSqliteQuerySync(database.db, pageQuery).rows
+            : readPage(afterSeq).rows;
+        for (const row of page) {
+          const compressed = row.data === null ? readCompressed(row.seq) : undefined;
+          const decoded = compressed
+            ? readCompressedTranscriptPayloadBytes(
+                compressed.event_zstd,
+                compressed.event_utf8_bytes,
+              )
+            : undefined;
+          for (let offset = 1; ; offset += SLICE_BYTES) {
+            control.throwIfCancelled();
+            // The codec returns Buffer; every frame must own only its sliced bytes.
+            const data =
+              decoded !== undefined
+                ? new Uint8Array(decoded.subarray(offset - 1, offset - 1 + SLICE_BYTES))
+                : expectDefined(
+                    offset === 1 ? row.data : readPart({ seq: row.seq, offset })?.data,
+                    "transcript snapshot row",
+                  );
+            if (bytes + data.byteLength > CHUNK_BYTES) {
+              await flush();
+            }
+            const endOfEvent = data.byteLength < SLICE_BYTES;
+            frames.push({
+              data,
+              endOfEvent,
+              ...(request.includeEventJson && endOfEvent ? { seq: row.seq } : {}),
+            });
+            bytes += data.byteLength;
+            if (bytes >= CHUNK_BYTES || frames.length >= CHUNK_FRAMES) {
+              await flush();
+            }
+            if (endOfEvent) {
+              eventCount++;
+              break;
+            }
           }
         }
+        if (page.length < PAGE_ROWS) {
+          break;
+        }
+        afterSeq = page[page.length - 1]!.seq;
       }
       await flush();
       control.throwIfCancelled();
@@ -136,10 +195,7 @@ export async function streamSessionTranscriptHydration(
     }
     try {
       try {
-        if (database.db.isTransaction) {
-          // sqlite-allow-raw: Finish this read snapshot before releasing its native handle.
-          database.db.exec("ROLLBACK");
-        }
+        snapshot?.close();
       } finally {
         database.close();
       }

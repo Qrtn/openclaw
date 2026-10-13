@@ -38,7 +38,7 @@ import {
   selectTranscriptReport,
 } from "./session-transcript-report-policy.js";
 import { applyAssistantDeliveryDirectives } from "./transcript-assistant-delivery.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 import { SessionTranscriptWriterClaimReboundError } from "./transcript-write-context.js";
 
 function readReportBranch(database: OpenClawAgentDatabase, sessionId: string) {
@@ -97,11 +97,13 @@ function readReportEvent(database: OpenClawAgentDatabase, sessionId: string, seq
     database.db,
     getSessionKysely(database.db)
       .selectFrom("transcript_events")
-      .select(transcriptEventJsonSql(database.db).as("event_json"))
+      .select(transcriptPayloadColumns(database.db))
       .where("session_id", "=", sessionId)
       .where("seq", "=", seq),
   );
-  const event: unknown = row ? JSON.parse(row.event_json) : undefined;
+  const event: unknown = row
+    ? JSON.parse(readSelectedTranscriptPayload(database.db, row))
+    : undefined;
   return asOptionalRecord(event);
 }
 

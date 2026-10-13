@@ -34,7 +34,7 @@ import {
   assertCanonicalSqliteSessionKeysCurrent,
   readWithCanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 
 function sessionKeySegmentStartsWith(sessionKey: string, prefix: string): boolean {
   const firstSeparator = sessionKey.indexOf(":");
@@ -102,7 +102,7 @@ function sqliteTranscriptStateHasMarker(params: {
       params.database.db,
       db
         .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(params.database.db).as("event_json"))
+        .select(transcriptPayloadColumns(params.database.db))
         .where("session_id", "=", params.sessionId)
         .orderBy("seq", "asc"),
     );
@@ -112,7 +112,8 @@ function sqliteTranscriptStateHasMarker(params: {
       if (params.diagnostics) {
         params.diagnostics.markerRows = (params.diagnostics.markerRows ?? 0) + 1;
       }
-      hasMarker ||= row.event_json.includes(params.transcriptContentMarker);
+      const eventJson = readSelectedTranscriptPayload(params.database.db, row);
+      hasMarker ||= eventJson.includes(params.transcriptContentMarker);
     }
     return hasMarker;
   } finally {

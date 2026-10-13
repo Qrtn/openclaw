@@ -27,13 +27,21 @@ export async function visitQaSqliteTranscriptEvents(
   databasePath: string,
   visit: (eventJson: string) => void,
 ): Promise<void> {
-  const [{ openNodeSqliteDatabase }, { tableExists, tableHasColumn }, queries, payload] =
-    await Promise.all([
-      import("../infra/node-sqlite.js"),
-      import("../state/openclaw-state-db-schema-helpers.js"),
-      import("../infra/kysely-sync.js"),
-      import("../config/sessions/transcript-payload.js"),
-    ]);
+  const [
+    { openNodeSqliteDatabase },
+    { tableExists, tableHasColumn },
+    queries,
+    payload,
+    { sql },
+    bytes,
+  ] = await Promise.all([
+    import("../infra/node-sqlite.js"),
+    import("../state/openclaw-state-db-schema-helpers.js"),
+    import("../infra/kysely-sync.js"),
+    import("../config/sessions/transcript-payload.js"),
+    import("kysely"),
+    import("../infra/database-engine/text-bytes.js"),
+  ]);
   const database = openNodeSqliteDatabase(databasePath, { readOnly: true });
   try {
     if (!tableExists(database, "transcript_events")) {
@@ -43,16 +51,22 @@ export async function visitQaSqliteTranscriptEvents(
       transcript_events: { session_id: string; seq: number; event_json: string };
     }>(database);
     // QA release fixtures can belong to a published pre-compression schema.
-    const eventJson = tableHasColumn(database, "transcript_events", "event_zstd")
-      ? payload.transcriptEventJsonSql(database).as("event_json")
-      : "event_json";
+    const columns = tableHasColumn(database, "transcript_events", "event_zstd")
+      ? payload.transcriptPayloadColumns(database)
+      : [
+          bytes
+            .engineTextByteSliceSql(database, sql.ref<string>("event_json"), 1, 64 * 1024)
+            .as("event_data"),
+          sql<Uint8Array | null>`NULL`.as("event_zstd"), // kysely-allow-raw: pre-compression release fixtures have only identity TEXT.
+          sql<number | null>`NULL`.as("event_utf8_bytes"), // kysely-allow-raw: pre-compression fixtures have no byte metadata.
+          sql.ref<string>("session_id").as("payload_session_id"),
+          sql.ref<number>("seq").as("payload_seq"),
+        ];
     for (const row of queries.iterateSqliteQuerySync(
       database,
-      db.selectFrom("transcript_events").select(eventJson).orderBy("session_id").orderBy("seq"),
+      db.selectFrom("transcript_events").select(columns).orderBy("session_id").orderBy("seq"),
     )) {
-      if (typeof row.event_json === "string") {
-        visit(row.event_json);
-      }
+      visit(payload.readSelectedTranscriptPayload(database, row));
     }
   } finally {
     database.close();

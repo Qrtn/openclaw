@@ -25,7 +25,7 @@ import {
 } from "./session-accessor.sqlite-reset-window.js";
 import { isVisibleHistoryNonMessageEvent } from "./session-history-visibility.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
-import { transcriptEventJsonSql } from "./transcript-payload.js";
+import { readSelectedTranscriptPayload, transcriptPayloadColumns } from "./transcript-payload.js";
 import { assertTranscriptNavigationValid } from "./transcript-predicate-fields.js";
 
 /** Select display slots without loading custom content or details into history metadata. */
@@ -36,10 +36,10 @@ export function isVisibleHistoryNonMessageEventSql(
   valid: Expression<number>,
 ): RawBuilder<SqlBool> {
   return /* kysely-allow-raw: malformed selected custom messages are returned for the existing read refusal. */ sql<SqlBool>`(${type} IN ('compaction', 'reset', 'custom_message') AND CASE
-    WHEN ${type} IN ('compaction', 'reset') THEN 1
+    WHEN ${type} IN ('compaction', 'reset') THEN TRUE
     WHEN ${type} = 'custom_message' THEN
       ${valid} = 0 OR (${display} = 1 AND (${customType} IS NULL OR ${customType} != ${OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE}))
-    ELSE 0 END)`;
+    ELSE FALSE END)`;
 }
 
 export const historyNavigationValidSql =
@@ -163,23 +163,65 @@ export function readDisplayableActiveEventById(
   maxBytes?: number,
 ) {
   const db = getActiveTranscriptKysely(projection.database);
+  const payloadColumns = transcriptPayloadColumns(projection.database.db, "event");
   const indexed = executeSqliteQueryTakeFirstSync(
     projection.database.db,
-    selectDisplayableActiveEventById(projection, eventId).select((eb) =>
-      maxBytes === undefined
-        ? transcriptEventJsonSql(projection.database.db, "event").as("event_json")
-        : eb
-            .case()
-            .when(eb(transcriptEventReadBytesSql("event"), "<=", maxBytes))
-            .then(transcriptEventJsonSql(projection.database.db, "event"))
-            .else(null)
-            .end()
-            .as("event_json"),
-    ),
+    selectDisplayableActiveEventById(projection, eventId)
+      .select((eb) =>
+        eb
+          .case()
+          .when(
+            maxBytes === undefined
+              ? eb.val(true)
+              : eb(transcriptEventReadBytesSql("event"), "<=", maxBytes),
+          )
+          .then(1)
+          .else(0)
+          .end()
+          .as("payload_admitted"),
+      )
+      .select((eb) =>
+        maxBytes === undefined
+          ? payloadColumns
+          : [
+              eb
+                .case()
+                .when(eb(transcriptEventReadBytesSql("event"), "<=", maxBytes))
+                .then(payloadColumns[0].expression)
+                .else(null)
+                .end()
+                .as("event_data"),
+              eb
+                .case()
+                .when(eb(transcriptEventReadBytesSql("event"), "<=", maxBytes))
+                .then(payloadColumns[1].expression)
+                .else(null)
+                .end()
+                .as("event_zstd"),
+              eb
+                .case()
+                .when(eb(transcriptEventReadBytesSql("event"), "<=", maxBytes))
+                .then(payloadColumns[2].expression)
+                .else(null)
+                .end()
+                .as("event_utf8_bytes"),
+              payloadColumns[3],
+              payloadColumns[4],
+            ],
+      ),
   );
   assertTranscriptNavigationValid(indexed?.navigation_valid);
   if (indexed) {
-    return indexed.event_json === null ? undefined : { ...indexed, event_json: indexed.event_json };
+    return indexed.payload_admitted === 0
+      ? undefined
+      : {
+          event_seq: indexed.event_seq,
+          active_position: indexed.active_position,
+          message_position: indexed.message_position,
+          event_type: indexed.event_type,
+          navigation_valid: indexed.navigation_valid,
+          event_json: readSelectedTranscriptPayload(projection.database.db, indexed),
+        };
   }
   const unindexed = findUnindexedActiveTranscriptEntry(projection, eventId);
   if (
@@ -195,7 +237,7 @@ export function readDisplayableActiveEventById(
     projection.database.db,
     db
       .selectFrom("transcript_events")
-      .select(transcriptEventJsonSql(projection.database.db).as("event_json"))
+      .select(transcriptPayloadColumns(projection.database.db))
       .where("session_id", "=", projection.resolved.sessionId)
       .where("seq", "=", unindexed.event_seq),
   );
@@ -205,7 +247,7 @@ export function readDisplayableActiveEventById(
         active_position: unindexed.active_position,
         message_position: unindexed.message_position,
         event_type: typeof unindexed.event.type === "string" ? unindexed.event.type : null,
-        event_json: event.event_json,
+        event_json: readSelectedTranscriptPayload(projection.database.db, event),
       }
     : undefined;
 }
@@ -323,7 +365,7 @@ function readHistoricalDisplayEventRange(
     projection.database.db,
     getActiveTranscriptKysely(projection.database)
       .selectFrom("transcript_events")
-      .select(["seq", transcriptEventJsonSql(projection.database.db).as("event_json")])
+      .select(["seq", ...transcriptPayloadColumns(projection.database.db)])
       .where("session_id", "=", projection.resolved.sessionId)
       .where(
         "seq",
@@ -331,7 +373,9 @@ function readHistoricalDisplayEventRange(
         selected.map((row) => row.event_seq),
       ),
   ).rows;
-  const payloadBySeq = new Map(payloads.map((row) => [row.seq, row.event_json]));
+  const payloadBySeq = new Map(
+    payloads.map((row) => [row.seq, readSelectedTranscriptPayload(projection.database.db, row)]),
+  );
   return positionTranscriptDisplayEvents(
     projection,
     displaySource,

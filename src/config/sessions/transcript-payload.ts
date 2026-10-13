@@ -1,12 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { sql, type Expression, type RawBuilder } from "kysely";
+import { engineTextByteSliceSql } from "../../infra/database-engine/text-bytes.js";
 import {
   createSqliteQueryCache,
+  executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   prepareSqliteQuerySync,
   prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { supportsNodeSqliteJsonb } from "../../infra/node-sqlite.js";
+import { isPostgresSqlConnection } from "../../infra/sql-connection.js";
+import { readSqliteTextEncoding } from "../../infra/sqlite-schema-admission.js";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
@@ -26,9 +30,8 @@ import {
 export const MAX_COMPRESSED_EVENT_BYTES = 4 * 1024 * 1024;
 const MAX_NAVIGATION_BYTES = 16 * 1024;
 const MIN_COMPRESS_BYTES = 1024;
-const DECODE_FUNCTION = "openclaw_transcript_payload_decode";
-const registeredDecoders = new WeakSet<DatabaseSync>();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const PAYLOAD_SLICE_BYTES = 64 * 1024;
 
 export type TranscriptPayloadRecord = TranscriptPredicateFields & {
   event_json: string | null;
@@ -44,6 +47,122 @@ export type PreparedTranscriptPayload = {
 };
 
 export type TranscriptPayloadAlias = "transcript_events" | "event" | "te" | "parent";
+
+/** Select canonical storage only after the caller's predicates and byte admission. */
+export function transcriptPayloadColumns(
+  database: DatabaseSync,
+  alias: TranscriptPayloadAlias = "transcript_events",
+  projectedIdentity?: Expression<string | null>,
+) {
+  /* kysely-allow-raw: closed aliases refer to canonical storage, never decoded SQL values. */
+  const canonicalIdentity = sql.ref<string | null>(`${alias}.event_json`);
+  /* kysely-allow-raw: only stored identity values enter server-side JSON projections. */
+  const identity = projectedIdentity
+    ? sql<
+        string | null
+      >`CASE WHEN ${canonicalIdentity} IS NULL THEN NULL ELSE ${projectedIdentity} END`
+    : canonicalIdentity;
+  /* kysely-allow-raw: admit compressed input before it crosses the database bridge. */
+  const compressed = sql.ref<Uint8Array | null>(`${alias}.event_zstd`);
+  /* kysely-allow-raw: recorded output bytes bound the worker codec allocation. */
+  const bytes = sql.ref<number | null>(`${alias}.event_utf8_bytes`);
+  return [
+    engineTextByteSliceSql(database, identity, 1, PAYLOAD_SLICE_BYTES).as("event_data"),
+    /* kysely-allow-raw: rejected compressed rows retain invalid bounds without materializing their blob. */
+    sql<Uint8Array | null>`CASE WHEN ${canonicalIdentity} IS NULL
+      AND octet_length(${compressed}) BETWEEN 1 AND ${MAX_COMPRESSED_EVENT_BYTES}
+      AND ${bytes} BETWEEN 1 AND ${MAX_COMPRESSED_EVENT_BYTES}
+      THEN ${compressed} ELSE NULL END`.as("event_zstd"),
+    bytes.as("event_utf8_bytes"),
+    /* kysely-allow-raw: continuation slices use the same canonical primary key and snapshot. */
+    sql.ref<string>(`${alias}.session_id`).as("payload_session_id"),
+    /* kysely-allow-raw: continuation slices use the same canonical primary key and snapshot. */
+    sql.ref<number>(`${alias}.seq`).as("payload_seq"),
+  ] as const;
+}
+
+export type SelectedTranscriptPayload = {
+  event_data: Uint8Array | null;
+  event_zstd: Uint8Array | null;
+  event_utf8_bytes: number | null;
+  payload_session_id: string;
+  payload_seq: number;
+};
+
+const payloadSliceReader = createSqliteQueryCache((database) => ({
+  encoding: isPostgresSqlConnection(database) ? "UTF-8" : readSqliteTextEncoding(database),
+  read: prepareSqliteQueryTakeFirstSync<
+    { sessionId: string; seq: number; offset: number },
+    { data: Uint8Array | null }
+  >(database, (parameter) =>
+    getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
+      .selectFrom("transcript_events")
+      .select(
+        engineTextByteSliceSql(
+          database,
+          /* kysely-allow-raw: identity continuation stays in the current read snapshot. */
+          sql.ref<string | null>("event_json"),
+          parameter((row) => row.offset),
+          PAYLOAD_SLICE_BYTES,
+        ).as("data"),
+      )
+      .where(
+        "session_id",
+        "=",
+        parameter((row) => row.sessionId),
+      )
+      .where(
+        "seq",
+        "=",
+        parameter((row) => row.seq),
+      ),
+  ),
+}));
+
+/** Materialize an already-selected body; giant identity TEXT crosses only in bounded slices. */
+export function readSelectedTranscriptPayload(
+  database: DatabaseSync,
+  row: SelectedTranscriptPayload,
+  projectedIdentity?: Expression<string | null>,
+): string {
+  if (row.event_data === null) {
+    return decodeCompressedTranscriptPayload(row.event_zstd, row.event_utf8_bytes);
+  }
+  const reader = payloadSliceReader(database);
+  const decoder = new TextDecoder(reader.encoding, { ignoreBOM: true });
+  let data = row.event_data;
+  let result = decoder.decode(data, { stream: true });
+  for (
+    let offset = PAYLOAD_SLICE_BYTES + 1;
+    data.byteLength === PAYLOAD_SLICE_BYTES;
+    offset += PAYLOAD_SLICE_BYTES
+  ) {
+    const part = projectedIdentity
+      ? executeSqliteQueryTakeFirstSync(
+          database,
+          getNodeSqliteKysely<Pick<DB, "transcript_events">>(database)
+            .selectFrom("transcript_events")
+            .select(
+              engineTextByteSliceSql(database, projectedIdentity, offset, PAYLOAD_SLICE_BYTES).as(
+                "data",
+              ),
+            )
+            .where("session_id", "=", row.payload_session_id)
+            .where("seq", "=", row.payload_seq),
+        )
+      : reader.read({
+          sessionId: row.payload_session_id,
+          seq: row.payload_seq,
+          offset,
+        });
+    if (!part || part.data === null) {
+      throw new Error("Transcript payload disappeared from its read snapshot");
+    }
+    data = part.data;
+    result += decoder.decode(data, { stream: true });
+  }
+  return result + decoder.decode();
+}
 
 /** Physical payload writes participate in the transcript owner's admitted transaction. */
 export function createTranscriptEventInserter(database: DatabaseSync, sessionId: string) {
@@ -284,19 +403,22 @@ export function prepareTranscriptPayload(
   return { ...identity, event_json: null, event_zstd: compressed, navigation_json: navigation };
 }
 
-function registerDecoder(database: DatabaseSync): void {
-  if (registeredDecoders.has(database)) {
-    return;
-  }
-  database.function(
-    DECODE_FUNCTION,
-    { deterministic: true, directOnly: true },
-    decodeCompressedTranscriptPayload,
-  );
-  registeredDecoders.add(database);
+function decodeCompressedTranscriptPayload(bytes: unknown, rawBytes: unknown): string {
+  return utf8Decoder.decode(decompressTranscriptPayload(bytes, rawBytes));
 }
 
-function decodeCompressedTranscriptPayload(bytes: unknown, rawBytes: unknown): string {
+/** Hydration validates one bounded frame before exposing any of its canonical UTF-8 bytes. */
+export function readCompressedTranscriptPayloadBytes(
+  bytes: unknown,
+  rawBytes: unknown,
+): Uint8Array {
+  const decoded = decompressTranscriptPayload(bytes, rawBytes);
+  // Validate before hydration exposes the first frame, matching full text reads.
+  utf8Decoder.decode(decoded);
+  return decoded;
+}
+
+function decompressTranscriptPayload(bytes: unknown, rawBytes: unknown): Uint8Array {
   if (
     !(bytes instanceof Uint8Array) ||
     bytes.byteLength === 0 ||
@@ -316,7 +438,7 @@ function decodeCompressedTranscriptPayload(bytes: unknown, rawBytes: unknown): s
   if (decoded.byteLength !== rawBytes) {
     throw new Error("Compressed transcript payload length does not match its recorded UTF-8 size");
   }
-  return utf8Decoder.decode(decoded);
+  return decoded;
 }
 
 /** Decode selected rows without copying expanded payloads back through SQLite. */
@@ -324,31 +446,6 @@ export function readTranscriptPayload(
   row: Pick<TranscriptPayloadRecord, "event_json" | "event_zstd" | "event_utf8_bytes">,
 ): string {
   return row.event_json ?? decodeCompressedTranscriptPayload(row.event_zstd, row.event_utf8_bytes);
-}
-
-/** Only selected bodies decode; identity TEXT remains inside SQLite for native repairs. */
-export function transcriptEventJsonSql(
-  database: DatabaseSync,
-  alias: TranscriptPayloadAlias = "transcript_events",
-): RawBuilder<string> {
-  registerDecoder(database);
-  const identity =
-    /* kysely-allow-raw: closed transcript aliases select the canonical identity column. */ sql.ref(
-      `${alias}.event_json`,
-    );
-  const compressed =
-    /* kysely-allow-raw: closed transcript aliases select the canonical compressed column. */ sql.ref(
-      `${alias}.event_zstd`,
-    );
-  const bytes =
-    /* kysely-allow-raw: closed transcript aliases select recorded canonical byte counts. */ sql.ref(
-      `${alias}.event_utf8_bytes`,
-    );
-  const decode = getNodeSqliteKysely<Record<string, never>>(database).fn<string>(DECODE_FUNCTION, [
-    compressed,
-    bytes,
-  ]);
-  return /* kysely-allow-raw: lazy selection evaluates identity expressions once and keeps giant TEXT out of the bounded JS decoder. */ sql<string>`coalesce(${identity}, ${decode})`;
 }
 
 export function transcriptEventNavigationSql(

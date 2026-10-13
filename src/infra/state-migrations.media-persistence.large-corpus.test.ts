@@ -137,7 +137,6 @@ const SESSION_WINDOW_CHILD_SCRIPT = String.raw`
 const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   import { DatabaseSync } from "node:sqlite";
   import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
-  import { transcriptEventJsonSql } from "./src/config/sessions/transcript-payload.ts";
   import { readSqliteTranscriptPayload, sqliteTranscriptPayloadColumns } from "./scripts/lib/sqlite-transcript-payload.mjs";
   const originalPrepare = DatabaseSync.prototype.prepare;
   const cursorSelects = new Set();
@@ -164,7 +163,6 @@ const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   });
   const migrationSelects = mediaSelects;
   const db = new DatabaseSync(path, { readOnly: true });
-  transcriptEventJsonSql(db);
   const cursorPlanDetails = [...cursorSelects].flatMap((sql) => {
     const bindings = Array((sql.match(/\?/g) ?? []).length).fill(0);
     return originalPrepare.call(db, "EXPLAIN QUERY PLAN " + sql)

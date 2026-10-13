@@ -39,7 +39,6 @@ import {
   readTranscriptMessageByIdentity,
 } from "./session-accessor.sqlite-transcript-identity.js";
 import {
-  advanceTranscriptMutationAtInTransaction,
   deleteTranscriptEventsInTransaction,
   ensureTranscriptGenerationInTransaction,
   ensureTranscriptSessionRoot,
@@ -70,13 +69,17 @@ import {
   transcriptRewritePreservesAdmission,
   transcriptRewritePreservesProjection,
 } from "./session-transcript-rewrite-effects.js";
+import {
+  createCompressedTranscriptRewriteMatcher,
+  recordTranscriptReplacementMutation,
+  transcriptRewriteSourceMatchesSql,
+} from "./session-transcript-rewrite-source.js";
 import { canonicalizeTranscriptEventMedia } from "./transcript-event-media.js";
 import {
   createTranscriptEventInserter,
   createTranscriptPayloadUpdater,
   prepareTranscriptPayload,
   readTranscriptStorageEncoding,
-  transcriptEventJsonSql,
 } from "./transcript-payload.js";
 
 /** Inserts exact transcript rows without mutating the forward-only projection. */
@@ -513,22 +516,6 @@ export function replaceSqliteTranscriptEventsInTransaction(
   );
 }
 
-function recordTranscriptReplacementMutation(
-  database: OpenClawAgentDatabase,
-  sessionId: string,
-  preservedUpdatedAt: number | null | undefined,
-): void {
-  if (preservedUpdatedAt === undefined || preservedUpdatedAt === null) {
-    touchTranscriptMutationInTransaction(database, sessionId);
-    return;
-  }
-  // Maintenance rewrites must invalidate in-flight projections without making an old session
-  // look newly active. A one-tick advance preserves ordering while changing the snapshot key.
-  advanceTranscriptMutationAtInTransaction(database, sessionId, preservedUpdatedAt, {
-    strictly: true,
-  });
-}
-
 /** Rewrite existing transcript rows exactly, without append-time deduplication. */
 export function rewriteSqliteTranscriptEventRowsInTransaction(
   database: OpenClawAgentDatabase,
@@ -572,46 +559,51 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       [resolved.sessionKey, sqliteSessionIdWriteScope(resolved.sessionId)],
       () => {
         const db = getSessionKysely(database.db);
-        const rewrite = prepareSqliteQuerySync<(typeof rewrites)[number]>(
-          database.db,
-          (parameter) =>
-            db
-              .updateTable("transcript_events")
-              .set(
-                options.legacyTextStorage
-                  ? { event_json: parameter((row) => row.eventJson) }
-                  : {
-                      event_json: parameter((row) => row.payload!.event_json),
-                      event_zstd: parameter((row) => row.payload!.event_zstd),
-                      event_utf8_bytes: parameter((row) => row.payload!.event_utf8_bytes),
-                      navigation_json: parameter((row) => row.payload!.navigation_json),
-                      navigation_type: parameter((row) => row.payload!.navigation_type),
-                      navigation_custom_type: parameter(
-                        (row) => row.payload!.navigation_custom_type,
-                      ),
-                      navigation_display: parameter((row) => row.payload!.navigation_display),
-                      message_role: parameter((row) => row.payload!.message_role),
-                      navigation_last_type: parameter((row) => row.payload!.navigation_last_type),
-                      navigation_last_custom_type: parameter(
-                        (row) => row.payload!.navigation_last_custom_type,
-                      ),
-                      navigation_valid: parameter((row) => row.payload!.navigation_valid),
-                    },
-              )
-              .where("session_id", "=", resolved.sessionId)
-              .where(
-                "seq",
-                "=",
-                parameter((row) => row.seq),
-              )
-              .where(
-                options.legacyTextStorage ? "event_json" : transcriptEventJsonSql(database.db),
-                "=",
+        const matches = options.legacyTextStorage
+          ? undefined
+          : createCompressedTranscriptRewriteMatcher(database.db, resolved.sessionId);
+        const rewrite = prepareSqliteQuerySync<
+          (typeof rewrites)[number] & { compressedMatches: number }
+        >(database.db, (parameter) =>
+          db
+            .updateTable("transcript_events")
+            .set(
+              options.legacyTextStorage
+                ? { event_json: parameter((row) => row.eventJson) }
+                : {
+                    event_json: parameter((row) => row.payload!.event_json),
+                    event_zstd: parameter((row) => row.payload!.event_zstd),
+                    event_utf8_bytes: parameter((row) => row.payload!.event_utf8_bytes),
+                    navigation_json: parameter((row) => row.payload!.navigation_json),
+                    navigation_type: parameter((row) => row.payload!.navigation_type),
+                    navigation_custom_type: parameter((row) => row.payload!.navigation_custom_type),
+                    navigation_display: parameter((row) => row.payload!.navigation_display),
+                    message_role: parameter((row) => row.payload!.message_role),
+                    navigation_last_type: parameter((row) => row.payload!.navigation_last_type),
+                    navigation_last_custom_type: parameter(
+                      (row) => row.payload!.navigation_last_custom_type,
+                    ),
+                    navigation_valid: parameter((row) => row.payload!.navigation_valid),
+                  },
+            )
+            .where("session_id", "=", resolved.sessionId)
+            .where(
+              "seq",
+              "=",
+              parameter((row) => row.seq),
+            )
+            .where(
+              transcriptRewriteSourceMatchesSql(
                 parameter((row) => row.expectedEventJson),
+                parameter((row) => row.compressedMatches),
               ),
+            ),
         );
         for (const row of rewrites) {
-          const result = rewrite(row);
+          const result = rewrite({
+            ...row,
+            compressedMatches: matches?.(row.seq, row.expectedEventJson) ? 1 : 0,
+          });
           if (result.numAffectedRows !== 1n) {
             throw new Error(
               `Transcript row ${resolved.sessionId}:${row.seq} changed before exact rewrite`,

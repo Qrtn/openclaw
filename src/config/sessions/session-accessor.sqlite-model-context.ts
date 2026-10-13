@@ -45,9 +45,11 @@ import {
 } from "./session-transcript-read-fence.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import {
-  transcriptEventJsonSql,
+  readSelectedTranscriptPayload,
   transcriptEventModelBytesSql,
   transcriptEventModelNavigationSql,
+  transcriptPayloadColumns,
+  type SelectedTranscriptPayload,
 } from "./transcript-payload.js";
 import { assertTranscriptNavigationValid } from "./transcript-predicate-fields.js";
 import {
@@ -301,7 +303,7 @@ function withTranscriptContextSnapshot<T>(
           const header = executeSqliteQueryTakeFirstSync(
             database.db,
             base
-              .select(transcriptEventJsonSql(database.db).as("event_json"))
+              .select(transcriptPayloadColumns(database.db))
               .select("navigation_valid")
               .where((eb) =>
                 eb.or([eb("navigation_type", "=", "session"), eb("navigation_valid", "=", 0)]),
@@ -339,22 +341,35 @@ function withTranscriptContextSnapshot<T>(
             ),
             tree.nodes,
           );
-          const readPayload = prepareSqliteQuerySync<ContextEntry, { event_json: string }>(
-            database.db,
-            (parameter) =>
-              base.select(transcriptEventJsonSql(database.db).as("event_json")).where(
-                "seq",
-                "=",
-                parameter((row) => row.seq),
-              ),
+          const readPayload = prepareSqliteQuerySync<
+            ContextEntry,
+            SelectedTranscriptPayload & { message_role: string | null }
+          >(database.db, (parameter) =>
+            base.select([...transcriptPayloadColumns(database.db), "message_role"]).where(
+              "seq",
+              "=",
+              parameter((row) => row.seq),
+            ),
           );
+          const compressedModelEvent = (
+            row: SelectedTranscriptPayload & { message_role: string | null },
+            request: ModelContextRequest,
+          ) =>
+            projectModelContextEventSql(
+              sql.val(readSelectedTranscriptPayload(database.db, row)),
+              sql.val(request.omitCheckpoint ? 1 : 0),
+              sql.val(request.toolResultOmission || null),
+              sql.val(row.message_role),
+            );
           return read({
-            header: header ? JSON.parse(header.event_json) : undefined,
+            header: header
+              ? JSON.parse(readSelectedTranscriptPayload(database.db, header))
+              : undefined,
             entries,
             version,
             readEntry: (entry) => {
               const row = readPayload(entry).rows[0];
-              return hydrateContextEntry(row!.event_json, entry);
+              return hydrateContextEntry(readSelectedTranscriptPayload(database.db, row!), entry);
             },
             readModelEntrySizes: (requests) => {
               const sizes = new Map<ContextEntry, number>();
@@ -364,19 +379,26 @@ function withTranscriptContextSnapshot<T>(
                   .select((eb) => {
                     const storedBytes = transcriptEventModelBytesSql(omitCheckpoint);
                     // Stored costs describe the original model view, not a transient omission notice.
-                    const bytes: AliasableExpression<number> = omission
+                    const bytes: AliasableExpression<number | null> = omission
                       ? eb
                           .case()
                           .when(omission, "is not", null)
                           .then(
-                            eb.fn<number>("octet_length", [
-                              projectModelContextEventSql(
-                                transcriptEventJsonSql(database.db),
-                                omitCheckpoint,
-                                omission,
-                                eb.ref("message_role"),
-                              ),
-                            ]),
+                            eb
+                              .case()
+                              .when("event_json", "is not", null)
+                              .then(
+                                eb.fn<number>("octet_length", [
+                                  projectModelContextEventSql(
+                                    eb.fn.coalesce("event_json", eb.val("")),
+                                    omitCheckpoint,
+                                    omission,
+                                    eb.ref("message_role"),
+                                  ),
+                                ]),
+                              )
+                              .else(null)
+                              .end(),
                           )
                           .else(storedBytes)
                           .end()
@@ -385,7 +407,23 @@ function withTranscriptContextSnapshot<T>(
                   })
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {
-                  sizes.set(bySeq.get(row.seq)!, row.bytes);
+                  const entry = bySeq.get(row.seq)!;
+                  const request = batch.find(({ entry: candidate }) => candidate.seq === row.seq)!;
+                  if (row.bytes !== null || !request.toolResultOmission) {
+                    sizes.set(entry, row.bytes!);
+                    continue;
+                  }
+                  // Only an omitted compressed body needs decoding; all other costs stay metadata.
+                  const payload = readPayload(entry).rows[0]!;
+                  const projected = executeSqliteQueryTakeFirstSync(
+                    database.db,
+                    db.selectNoFrom(
+                      db
+                        .fn<number>("octet_length", [compressedModelEvent(payload, request)])
+                        .as("bytes"),
+                    ),
+                  )!;
+                  sizes.set(entry, projected.bytes);
                 }
               }
               return sizes;
@@ -396,20 +434,39 @@ function withTranscriptContextSnapshot<T>(
                 const { bySeq, omitCheckpoint, omission } = modelContextBatchSql(batch);
                 // Bound both IN lists while keeping payload selection inside the navigation snapshot.
                 // SQL removes obsolete replay/private fields before they enter JavaScript.
+                /* kysely-allow-raw: the model owner projects selected identity payloads inside SQL. */
+                const projectedIdentity = projectModelContextEventSql(
+                  sql.ref<string>("event_json"),
+                  omitCheckpoint,
+                  omission,
+                  sql.ref("message_role"),
+                );
                 const query = base
-                  .select((eb) => [
+                  .select([
                     "seq",
-                    projectModelContextEventSql(
-                      transcriptEventJsonSql(database.db),
-                      omitCheckpoint,
-                      omission,
-                      eb.ref("message_role"),
-                    ).as("event_json"),
+                    "message_role",
+                    ...transcriptPayloadColumns(
+                      database.db,
+                      "transcript_events",
+                      projectedIdentity,
+                    ),
                   ])
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {
                   const entry = bySeq.get(row.seq)!;
-                  const hydrated = hydrateContextEntry(row.event_json, entry);
+                  const eventJson =
+                    row.event_data === null
+                      ? executeSqliteQueryTakeFirstSync(
+                          database.db,
+                          db.selectNoFrom(
+                            compressedModelEvent(
+                              row,
+                              batch.find(({ entry: candidate }) => candidate.seq === row.seq)!,
+                            ).as("event_json"),
+                          ),
+                        )!.event_json
+                      : readSelectedTranscriptPayload(database.db, row, projectedIdentity);
+                  const hydrated = hydrateContextEntry(eventJson, entry);
                   if (
                     entry.type === "message" &&
                     entry.message.role === "toolResult" &&

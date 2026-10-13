@@ -63,7 +63,11 @@ import {
 } from "./session-cold-storage.test-support.js";
 import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
-import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
+import {
+  prepareTranscriptPayload,
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+} from "./transcript-payload.js";
 
 const tempDirs = createTempDirTracker();
 const databasePaths: string[] = [];
@@ -202,11 +206,11 @@ describe("cold transcript storage workers", () => {
         database,
         getNodeSqliteKysely<DB>(database)
           .selectFrom("transcript_events")
-          .select(transcriptEventJsonSql(database).as("event_json"))
+          .select(transcriptPayloadColumns(database))
           .where("session_id", "=", sessionId)
           .orderBy("seq"),
       ).rows) {
-        hash.update(row.event_json);
+        hash.update(readSelectedTranscriptPayload(database, row));
         hash.update("\n");
       }
       return hash.digest("hex");

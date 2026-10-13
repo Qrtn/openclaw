@@ -16,7 +16,11 @@ import { createTranscriptEntryAnchor } from "./session-accessor.sqlite-transcrip
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
-import { transcriptEventJsonSql, transcriptEventRunIdSql } from "./transcript-payload.js";
+import {
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
+  transcriptEventRunIdSql,
+} from "./transcript-payload.js";
 import { selectVisibleTranscriptEvents } from "./transcript-visible-events.js";
 
 // Keep supplied-key probes below SQLite's conservative variable ceiling.
@@ -134,7 +138,7 @@ export function readTranscriptMirrorFacts(
           "identity.message_idempotency_key",
           "event.seq",
           "identity.parent_id",
-          transcriptEventJsonSql(database.db, "event").as("event_json"),
+          ...transcriptPayloadColumns(database.db, "event"),
           "active.message_position",
           "rewrite.generation",
         ]);
@@ -175,8 +179,10 @@ export function readTranscriptMirrorFacts(
         }
         const rows = executeSqliteQuerySync(database.db, query.orderBy("event.seq", "asc")).rows;
         for (const row of rows) {
-          // SAFETY: event_json reconstructs the stored TranscriptEvent via transcriptEventJsonSql.
-          const event = JSON.parse(row.event_json) as TranscriptEvent;
+          // SAFETY: Selected canonical payloads contain the stored TranscriptEvent.
+          const event = JSON.parse(
+            readSelectedTranscriptPayload(database.db, row),
+          ) as TranscriptEvent;
           if (row.is_source) {
             facts.sourceEvents?.push(event);
             continue;

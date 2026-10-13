@@ -9,8 +9,10 @@ import { getSessionKysely } from "../src/config/sessions/session-accessor.sqlite
 import { transcriptEventReadBytesSql } from "../src/config/sessions/session-transcript-read-bytes.js";
 import {
   prepareTranscriptPayload,
-  transcriptEventJsonSql,
+  readSelectedTranscriptPayload,
+  transcriptPayloadColumns,
 } from "../src/config/sessions/transcript-payload.js";
+import { compileSqliteQueryBindings, executeSqliteQuerySync } from "../src/infra/kysely-sync.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../src/state/openclaw-agent-db-contract.js";
 import {
   openOpenClawAgentDatabase,
@@ -517,17 +519,19 @@ function runTimedQuery(params: {
   id: string;
   queryParams: SQLInputValue[];
   requestedRuns: number;
+  readRows?: () => unknown[];
   sql: string;
 }) {
   const runs = params.fullLoad
     ? Math.min(params.requestedRuns, SQLITE_PERF_FULL_LOAD_RUNS)
     : params.requestedRuns;
   const statement = params.db.prepare(params.sql);
+  const readRows = params.readRows ?? (() => statement.all(...params.queryParams));
   const samples: number[] = [];
-  let rows = statement.all(...params.queryParams).length;
+  let rows = readRows().length;
   for (let i = 0; i < runs; i += 1) {
     const started = nowMs();
-    rows = statement.all(...params.queryParams).length;
+    rows = readRows().length;
     samples.push(nowMs() - started);
   }
   return {
@@ -566,7 +570,19 @@ function runHotQueries(params: {
   const transcriptPlaceholders = transcriptPositions.map(() => "?").join(", ");
   const db = getSessionKysely(params.agentDb);
   const transcriptBytes = transcriptEventReadBytesSql("event").compile(db).sql;
-  const transcriptPayload = transcriptEventJsonSql(params.agentDb, "event").compile(db).sql;
+  const transcriptPayload = db
+    .selectFrom("session_transcript_active_events as active")
+    .innerJoin("transcript_events as event", (join) =>
+      join
+        .onRef("event.session_id", "=", "active.session_id")
+        .onRef("event.seq", "=", "active.event_seq"),
+    )
+    .select("active.message_position")
+    .select(transcriptPayloadColumns(params.agentDb, "event"))
+    .where("active.session_id", "=", SQLITE_PERF_TRANSCRIPT_SESSION_ID)
+    .where("active.message_position", "in", transcriptPositions)
+    .orderBy("active.message_position", "asc");
+  const transcriptPayloadBindings = compileSqliteQueryBindings(() => transcriptPayload);
   const queries: Array<Omit<Parameters<typeof runTimedQuery>[0], "db" | "requestedRuns">> = [
     {
       database: "state",
@@ -686,14 +702,12 @@ function runHotQueries(params: {
     {
       database: "agent",
       id: "transcript.tail.payload",
-      queryParams: [SQLITE_PERF_TRANSCRIPT_SESSION_ID, ...transcriptPositions],
-      sql: `SELECT active.message_position, ${transcriptPayload} AS event_json
-              FROM session_transcript_active_events AS active
-              JOIN transcript_events AS event
-                ON event.session_id = active.session_id AND event.seq = active.event_seq
-             WHERE active.session_id = ?
-               AND active.message_position IN (${transcriptPlaceholders})
-             ORDER BY active.message_position ASC`,
+      queryParams: transcriptPayloadBindings.bind(undefined),
+      sql: transcriptPayloadBindings.compiled.sql,
+      readRows: () =>
+        executeSqliteQuerySync(params.agentDb, transcriptPayload).rows.map((row) =>
+          readSelectedTranscriptPayload(params.agentDb, row),
+        ),
     },
   ];
   return queries.map((query) =>
