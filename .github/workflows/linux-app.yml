@@ -26,7 +26,8 @@ jobs:
     name: Build Linux companion
     # Match the release build base for native tests and manually built bundles.
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # Source runtime staging includes the canonical package/declaration build.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -384,7 +385,7 @@ jobs:
     name: Test Windows desktop
     # Match the regular Windows installer build runner.
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

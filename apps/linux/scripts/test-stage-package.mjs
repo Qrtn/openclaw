@@ -43,9 +43,18 @@ for (const platform of ["linux", "windows"]) {
     };
     const build = JSON.parse(decode(`${core}/dist/build-info.json`));
     assert.deepEqual(build.stagedOfficialPlugins, { commit, pluginIds: ["codex"] });
+    const owner = decode(`${core}/openclaw-install-owner.json`);
+    assert.deepEqual(JSON.parse(owner), {
+      schemaVersion: 1,
+      owner: "desktop-app",
+      displayName: "OpenClaw desktop",
+      updateHint: "Rebuild or update the desktop app to update this Gateway.",
+    });
     assert.equal(decode(`${native}/vendor/codex`).toString(), "synthetic platform executable");
     const manifest = read(work, "manifest.json");
     assert.equal(manifest.files["bin/bun"], "existing-runtime-hash");
+    assert.equal(manifest.files[`package/${core}/openclaw-install-owner.json`],
+      createHash("sha256").update(owner).digest("hex"));
     assert.equal(manifest.files[`package/${native}/vendor/codex`],
       createHash("sha256").update("synthetic platform executable").digest("hex"));
     assert.ok(added > 0);

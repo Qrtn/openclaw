@@ -27,6 +27,12 @@ export function stageInstalledPackage(installed, work, target, plan) {
   assert.ok(require.resolve(`@openai/codex-${platform}-${target.arch}/package.json`),
     "The staged Codex platform package is missing");
   stampDesktopRuntimePlugins(core, plan);
+  fs.writeFileSync(path.join(core, "openclaw-install-owner.json"), JSON.stringify({
+    schemaVersion: 1,
+    owner: "desktop-app",
+    displayName: "OpenClaw desktop",
+    updateHint: "Rebuild or update the desktop app to update this Gateway.",
+  }));
   const destination = path.join(work, "package");
   fs.mkdirSync(destination);
   // The desktop invokes the entry with Bun; npm command links and locks are not runtime data.
