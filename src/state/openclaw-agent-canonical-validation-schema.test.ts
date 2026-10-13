@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { constants, DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
