@@ -589,30 +589,30 @@ export const usageHandlers: GatewayRequestHandlers = {
             : [session];
         });
       };
-      const selectPage = (rows: SessionUsageEntry[]) => {
-        const selected = rows.filter((row) => !creatorKey || row.creatorKey === creatorKey);
-        return overviewOptions
-          ? selectUsageOverviewPage({
-              rows: selected,
-              options: overviewOptions,
-              dayBucket: resolveUsageCostWorkerDayBucket(dayBucket),
-            })
-          : selected.slice(0, limit);
-      };
       // Refill once after an access change. Continued churn may shorten the page, never extend the scan.
+      let visible: SessionUsageEntry[] | undefined;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await prepareUnavailableSources();
-        const pageSources = selectPage(readVisibleRows()).flatMap((row) => {
+        visible = readVisibleRows();
+        const selected = visible.filter((row) => !creatorKey || row.creatorKey === creatorKey);
+        const pageSources = (
+          overviewOptions
+            ? selectUsageOverviewPage({
+                rows: selected,
+                options: overviewOptions,
+                dayBucket: resolveUsageCostWorkerDayBucket(dayBucket),
+              })
+            : selected.slice(0, limit)
+        ).flatMap((row) => {
           const source = sourceFor(row);
           return source && !hydratedSources.has(source) ? [source] : [];
         });
         if (pageSources.length === 0) {
           break;
         }
+        visible = undefined;
         await loadUsageSessionContext(pageSources, visibilityFilter);
-        for (const source of pageSources) {
-          hydratedSources.add(source);
-        }
+        pageSources.forEach((source) => hydratedSources.add(source));
         result = {
           ...result,
           sessions: result.sessions.map((row) => {
@@ -627,8 +627,10 @@ export const usageHandlers: GatewayRequestHandlers = {
           }),
         };
       }
-      await prepareUnavailableSources();
-      const visible = readVisibleRows();
+      if (!visible) {
+        await prepareUnavailableSources();
+        visible = readVisibleRows();
+      }
       const creatorOptions = new Map<string, SessionUsageCreator>();
       for (const row of visible) {
         if (row.creatorKey) {
@@ -672,9 +674,7 @@ export const usageHandlers: GatewayRequestHandlers = {
         undefined,
       );
     } finally {
-      for (const read of contextReads.values()) {
-        read?.release();
-      }
+      contextReads.forEach((read) => read?.release());
     }
   }),
   "sessions.usage.timeseries": async ({ respond, params, context }) => {
