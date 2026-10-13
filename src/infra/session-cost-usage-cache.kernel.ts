@@ -12,7 +12,11 @@ import {
   pruneSessionCostUsagePartitionsInDatabase,
   writeSessionCostUsagePartitionsInDatabase,
 } from "./session-cost-usage-partitions.worker.js";
-import { USAGE_COST_ROLLUP_SCOPE as ROLLUP_SCOPE } from "./session-cost-usage-rollup-codec.js";
+import {
+  decodeUsageCostRollupEnvelope,
+  USAGE_COST_ROLLUP_SCOPE as ROLLUP_SCOPE,
+  type UsageCostFreshnessCheckpoint,
+} from "./session-cost-usage-rollup-codec.js";
 import { withSqliteDatabaseWriteScope } from "./sqlite-database-admission.js";
 
 const LEGACY_CACHE_SCOPE = "session-cost-usage";
@@ -27,6 +31,8 @@ export type SessionCostUsageRollupRow = {
   key: string;
   updatedAt: number;
   valueJson: string;
+  /** Actual stored length, carried by database reads for cheap read repair. */
+  bodyBytes?: number;
 };
 
 type SessionCostUsageJson = string | Uint8Array;
@@ -41,10 +47,21 @@ function cacheJsonText(value: SessionCostUsageJson) {
     : cacheExpressions.cast<string>(cacheExpressions.val(value), "text");
 }
 
+export type SessionCostUsageDeferredMetadata = {
+  checkpoint: UsageCostFreshnessCheckpoint;
+  scannedAt: number;
+};
+
 type RollupReadOptions = {
   includeBody?: boolean;
   throwIfCancelled?: () => void;
-  budget?: { remainingBytes: number; deferredPaths: Set<string> };
+  budget?: {
+    remainingBytes: number;
+    deferredPaths: Set<string>;
+    deferredMetadata: Map<string, SessionCostUsageDeferredMetadata>;
+    metadataLimit: number;
+    pricingFingerprint: string;
+  };
 };
 
 export function readSessionCostUsageRollupRowsInDatabase(
@@ -111,8 +128,43 @@ export function readSessionCostUsageRollupRowsInDatabase(
           (row.body_bytes > 0 && row.blob === null) ||
           bytes > budget.remainingBytes);
       if (deferred) {
-        budget.deferredPaths.add(row.key);
+        const envelope = row.value_json
+          ? decodeUsageCostRollupEnvelope(row.value_json, budget.pricingFingerprint)
+          : undefined;
+        const invalidBody = envelope && envelope.body.storedBytes !== row.body_bytes;
+        if (!invalidBody) {
+          budget.deferredPaths.add(row.key);
+        }
         if (row.value_json === null || headerBytes > budget.remainingBytes) {
+          if (!invalidBody && envelope && budget.deferredMetadata.size < budget.metadataLimit) {
+            const source = envelope.checkpoint;
+            const checkpoint: UsageCostFreshnessCheckpoint =
+              source.kind === "jsonl"
+                ? {
+                    kind: source.kind,
+                    observedSize: source.observedSize,
+                    observedMtimeMs: source.observedMtimeMs,
+                    device: source.device,
+                    inode: source.inode,
+                  }
+                : {
+                    kind: source.kind,
+                    maxSeq: source.maxSeq,
+                    eventCount: source.eventCount,
+                    size: source.size,
+                    mtimeMs: source.mtimeMs,
+                  };
+            // Only numeric freshness facts fit the reserved descriptor allowance.
+            if (
+              Object.entries(checkpoint).every(
+                ([key, value]) =>
+                  key === "kind" || (typeof value === "number" && Number.isFinite(value)),
+              ) &&
+              Number.isFinite(envelope.scannedAt)
+            ) {
+              budget.deferredMetadata.set(row.key, { checkpoint, scannedAt: envelope.scannedAt });
+            }
+          }
           continue;
         }
         budget.remainingBytes -= headerBytes;
@@ -124,6 +176,7 @@ export function readSessionCostUsageRollupRowsInDatabase(
           key: row.key,
           valueJson: row.value_json,
           updatedAt: row.updated_at,
+          bodyBytes: row.body_bytes,
           ...(options?.includeBody ? { blob: deferred ? null : row.blob } : {}),
         });
       }

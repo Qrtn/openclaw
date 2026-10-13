@@ -490,12 +490,13 @@ export const usageHandlers: GatewayRequestHandlers = {
       }
       throw err;
     }
-    const sourcesByAgent = new Map(
-      [...Map.groupBy(result.sources, (source) => source.agentId)].map(([agentId, sources]) => [
-        agentId,
-        new Map(sources.map((source) => [source.key, source])),
-      ]),
-    );
+    const sourcesByAgent = new Map<string, Map<string, UsageSessionSelection>>();
+    for (const source of result.sources) {
+      const sources =
+        sourcesByAgent.get(source.agentId) ?? new Map<string, UsageSessionSelection>();
+      sources.set(source.key, source);
+      sourcesByAgent.set(source.agentId, sources);
+    }
     const contextReads = new Map<
       UsageSessionSelection,
       Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined

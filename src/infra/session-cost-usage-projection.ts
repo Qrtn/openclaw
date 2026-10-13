@@ -1,5 +1,8 @@
 import { createTimeZoneDayKeyFormatter } from "./format-time/format-datetime.js";
-import type { SessionCostUsageRollupRow } from "./session-cost-usage-cache.kernel.js";
+import type {
+  SessionCostUsageDeferredMetadata,
+  SessionCostUsageRollupRow,
+} from "./session-cost-usage-cache.kernel.js";
 import {
   canUseUsageCostRollupForPartial,
   decodeUsageCostRollup,
@@ -36,6 +39,7 @@ export type UsageCostRollupRowSource = {
   remainingRows: Iterable<SessionCostUsageRollupRow>;
   /** Cache payloads omitted before materialization because of the report allowance. */
   deferredPaths?: ReadonlySet<string>;
+  deferredMetadata?: ReadonlyMap<string, SessionCostUsageDeferredMetadata>;
 };
 
 export const createUsageDayKeyFormatter = (dayBucket?: UsageDailyBucket): UsageDayKeyFormatter => {
@@ -147,31 +151,38 @@ function createRollupProjectionReader(
     ) {
       const row = params.readRow(filePath);
       const envelope = readEnvelope(row);
+      const metadata = envelope ?? params.deferredMetadata?.get(filePath);
+      if (metadata) {
+        latestScan = Math.max(latestScan, metadata.scannedAt);
+      }
       // Aggregate freshness precedes body reads; session freshness follows decoding.
       const fresh = freshnessFile
-        ? isUsageCostRollupFresh({ checkpoint: envelope?.checkpoint, file: freshnessFile })
+        ? isUsageCostRollupFresh({ checkpoint: metadata?.checkpoint, file: freshnessFile })
         : undefined;
       const usable = envelope
         ? requests.filter(({ file }) =>
             canUseUsageCostRollupForPartial({ checkpoint: envelope.checkpoint, file }),
           )
         : [];
-      const entry = params.deferredPaths?.has(filePath)
-        ? null
-        : row && usable.length > 0
-          ? params.readEntry
-            ? await params.readEntry(row)
-            : decodeUsageCostRollup(
-                row.valueJson,
-                params.pricingFingerprint,
-                await params.readBody(row),
-              )
-          : undefined;
+      const entry =
+        row?.bodyBytes !== undefined && envelope?.body.storedBytes !== row.bodyBytes
+          ? undefined
+          : params.deferredPaths?.has(filePath)
+            ? null
+            : row && usable.length > 0
+              ? params.readEntry
+                ? await params.readEntry(row)
+                : decodeUsageCostRollup(
+                    row.valueJson,
+                    params.pricingFingerprint,
+                    await params.readBody(row),
+                  )
+              : undefined;
       const invalidBody = Boolean(row && usable.length > 0 && entry === undefined);
       if (invalidBody && row) {
         params.onInvalidBody(row.key);
       }
-      return { fresh, checkpoint: envelope?.checkpoint, entry, requests: usable, invalidBody };
+      return { fresh, checkpoint: metadata?.checkpoint, entry, requests: usable, invalidBody };
     },
     refreshedAt() {
       for (const row of params.remainingRows) {

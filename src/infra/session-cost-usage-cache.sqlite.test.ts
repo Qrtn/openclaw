@@ -20,7 +20,11 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
 import { migrateSessionCostUsageRollupStorage } from "./session-cost-usage-cache-migration.js";
-import { writeSessionCostUsageRollupInDatabase } from "./session-cost-usage-cache.kernel.js";
+import {
+  readSessionCostUsageRollupRowsInDatabase,
+  writeSessionCostUsageRollupInDatabase,
+  type SessionCostUsageDeferredMetadata,
+} from "./session-cost-usage-cache.kernel.js";
 import {
   deleteSessionCostUsageRollupsExcept,
   isSessionCostUsageRefreshRunning,
@@ -35,6 +39,7 @@ import {
   decodeUsageCostPartition,
   USAGE_COST_PARTITION_SCOPE,
 } from "./session-cost-usage-partitions.js";
+import { projectSessionCostSummaries } from "./session-cost-usage-projection.js";
 import {
   decodeUsageCostRollup,
   encodeUsageCostRollup,
@@ -417,7 +422,7 @@ describe("session cost usage SQLite cache", () => {
         executions.restore();
       }
       expect(readSessionCostUsageRollupRows(agentId)).toEqual([
-        { key: "large.jsonl", updatedAt: 2, valueJson: '{"totalTokens":2}' },
+        { key: "large.jsonl", updatedAt: 2, valueJson: '{"totalTokens":2}', bodyBytes: 0 },
       ]);
     });
   });
@@ -447,7 +452,7 @@ describe("session cost usage SQLite cache", () => {
           }),
         ).toBe(true);
         expect(readSessionCostUsageRollupRows(agentId)).toEqual([
-          { key: rollupId, valueJson, updatedAt: 2 },
+          { key: rollupId, valueJson, updatedAt: 2, bodyBytes: 3 },
         ]);
         expect(
           db.prepare("SELECT value_json FROM cache_entries WHERE scope = 'other'").get(),
@@ -593,7 +598,7 @@ describe("session cost usage SQLite cache", () => {
         expect(refreshed).toBe(true);
 
         expect(readSessionCostUsageRollupRows(agentId)).toEqual([
-          { key: rollupId, updatedAt: 2, valueJson: refreshedValue },
+          { key: rollupId, updatedAt: 2, valueJson: refreshedValue, bodyBytes: 0 },
         ]);
       });
     },
@@ -722,7 +727,9 @@ describe("session cost usage SQLite cache", () => {
       insert.run("other", "keep", "{}", 1);
 
       const rows = readSessionCostUsageRollupRows(agentId);
-      expect(rows).toEqual([{ key: "current.jsonl", updatedAt: 2, valueJson: '{"version":2}' }]);
+      expect(rows).toEqual([
+        { key: "current.jsonl", updatedAt: 2, valueJson: '{"version":2}', bodyBytes: 0 },
+      ]);
 
       await deleteSessionCostUsageRollupsExcept({
         agentId,
@@ -741,7 +748,7 @@ describe("session cost usage SQLite cache", () => {
   });
 });
 
-it.each(["stored", "decoded"] as const)(
+it.each(["stored", "decoded", "corrupt-length"] as const)(
   "refreshes genuinely stale %s budget-deferred checkpoints",
   async (mode) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -764,10 +771,17 @@ it.each(["stored", "decoded"] as const)(
       if (!entry) {
         throw new Error("Expected valid checkpoint body");
       }
-      entry.rollup.untimestamped.tools = [
-        { name: "synthetic-" + "x".repeat((mode === "stored" ? 2 : 35) * 1024 * 1024), count: 1 },
-      ];
+      if (mode !== "corrupt-length") {
+        entry.rollup.untimestamped.tools = [
+          { name: "synthetic-" + "x".repeat((mode === "stored" ? 2 : 35) * 1024 * 1024), count: 1 },
+        ];
+      }
       const encoded = encodeUsageCostRollup(entry);
+      if (mode === "corrupt-length") {
+        const envelope = JSON.parse(encoded.valueJson);
+        envelope.body.bytes = 35 * 1024 * 1024;
+        encoded.valueJson = JSON.stringify(envelope);
+      }
       if (mode === "stored") {
         encoded.blob = Uint8Array.from(Buffer.from(JSON.stringify(entry.rollup)));
         const envelope = JSON.parse(encoded.valueJson);
@@ -803,9 +817,112 @@ it.each(["stored", "decoded"] as const)(
         expect(result).toMatchObject({
           kind: "sessions",
           summaries: [null],
-          staleSessionFiles: stale ? [sessionFile] : [],
+          staleSessionFiles: stale || mode === "corrupt-length" ? [sessionFile] : [],
           invalidRows: [],
-          cacheStatus: { pendingFiles: 1, staleFiles: stale ? 1 : 0 },
+          cacheStatus: { pendingFiles: 1, staleFiles: stale || mode === "corrupt-length" ? 1 : 0 },
+        });
+      }
+    });
+  },
+);
+
+it.each(["valid", "missing", "truncated"] as const)(
+  "preserves freshness or repairs %s bodies after header exhaustion",
+  async (mode) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const agentId = "usage-header-allowance";
+      const sessionFile = state.path("header-allowance.jsonl");
+      const record =
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-18T00:00:00Z",
+          message: { role: "assistant", usage: { input: 7, totalTokens: 7 } },
+        }) + "\n";
+      await fs.promises.writeFile(sessionFile, record);
+      await refreshCostUsageCacheForAgent({ config: {}, agentId, sessionFiles: [sessionFile] });
+      const row = readSessionCostUsageRollupRows(agentId)[0];
+      const entry = row && readSessionCostUsageRollupEntry(row, agentId);
+      if (!entry || !row) {
+        throw new Error("Expected stored checkpoint");
+      }
+      if (mode !== "valid") {
+        writeRollup(agentId, {
+          rollupId: row.key,
+          valueJson: Buffer.from(row.valueJson),
+          updatedAt: row.updatedAt,
+          blob: mode === "truncated" ? encodeUsageCostRollup(entry).blob.subarray(1) : undefined,
+        });
+      }
+      const budget = {
+        remainingBytes: 128,
+        deferredPaths: new Set<string>(),
+        deferredMetadata: new Map<string, SessionCostUsageDeferredMetadata>(),
+        metadataLimit: 1,
+        pricingFingerprint: entry.pricingFingerprint,
+      };
+      const rows = readSessionCostUsageRollupRowsInDatabase(
+        openOpenClawAgentDatabase({ agentId }).db,
+        [row.key],
+        { includeBody: true, budget },
+      );
+      expect(rows).toEqual([]);
+      expect(budget.remainingBytes).toBe(128);
+      expect(budget.deferredMetadata.size).toBe(mode === "valid" ? 1 : 0);
+      expect(budget.deferredPaths.has(row.key)).toBe(mode === "valid");
+      if (mode === "valid") {
+        expect(budget.deferredMetadata.get(row.key)?.checkpoint).not.toHaveProperty("anchorHash");
+      }
+      for (const stale of mode === "valid" ? [false, true] : [false]) {
+        if (stale) {
+          await fs.promises.appendFile(sessionFile, record);
+        }
+        const stat = await fs.promises.stat(sessionFile);
+        const result = await projectSessionCostSummaries({
+          readRow: () => undefined,
+          readBody: () => null,
+          onInvalidBody: () => {},
+          remainingRows: [],
+          deferredPaths: budget.deferredPaths,
+          deferredMetadata: budget.deferredMetadata,
+          sessions: [{ sessionFile }],
+          files: [
+            {
+              filePath: row.key,
+              sourcePath: sessionFile,
+              kind: "jsonl",
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              device: stat.dev,
+              inode: stat.ino,
+            },
+          ],
+          pricingFingerprint: entry.pricingFingerprint,
+        });
+        expect(result).toMatchObject({
+          summaries: [null],
+          staleSessionFiles: stale || mode !== "valid" ? [sessionFile] : [],
+          cacheStatus: { pendingFiles: 1, staleFiles: stale || mode !== "valid" ? 1 : 0 },
+        });
+      }
+      if (mode !== "valid") {
+        const prepared = prepareUsageCostWorker({
+          config: {},
+          agentId,
+          sessionFiles: [sessionFile],
+        });
+        const operation = {
+          kind: "sessions" as const,
+          sessions: [{ sessionFile }],
+          pricingFingerprint: entry.pricingFingerprint,
+        };
+        expect(await runUsageCostWorker(prepared, operation)).toMatchObject({
+          staleSessionFiles: [sessionFile],
+        });
+        // No rebuildRows: the refresh owner must detect actual body corruption itself.
+        await refreshCostUsageCacheForAgent({ config: {}, agentId, sessionFiles: [sessionFile] });
+        expect(await runUsageCostWorker(prepared, operation)).toMatchObject({
+          staleSessionFiles: [],
+          summaries: [{ totalTokens: 7 }],
         });
       }
     });

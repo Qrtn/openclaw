@@ -102,4 +102,29 @@ describe("usage rollup storage codec", () => {
       decodeUsageCostRollup(encoded.valueJson, "different-pricing", encoded.blob),
     ).toBeUndefined();
   });
+
+  it.each([0, 512])("rejects impossible lengths before deferring %i records", (records) => {
+    const original = entry(records);
+    const encoded = encodeUsageCostRollup(original);
+    const metadata = JSON.parse(encoded.valueJson);
+    for (const body of [
+      { ...metadata.body, bytes: 35 * 1024 * 1024 },
+      { ...metadata.body, bytes: metadata.body.storedBytes + 1, encoding: "identity" },
+      { ...metadata.body, bytes: metadata.body.storedBytes, encoding: "zstd" },
+    ]) {
+      expect(
+        decodeUsageCostRollup(
+          JSON.stringify({ ...metadata, body }),
+          original.pricingFingerprint,
+          encoded.blob,
+          { remainingBytes: 0 },
+        ),
+      ).toBeUndefined();
+    }
+    expect(
+      decodeUsageCostRollup(encoded.valueJson, original.pricingFingerprint, encoded.blob, {
+        remainingBytes: 0,
+      }),
+    ).toBeNull();
+  });
 });
