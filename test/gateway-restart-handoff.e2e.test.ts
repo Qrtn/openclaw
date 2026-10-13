@@ -328,7 +328,7 @@ it.skipIf(process.platform !== "linux")(
         if (!version) {
           throw new Error("Restart proof cannot identify its Gateway artifact version");
         }
-        // Seal policy revision 1 binds version and schema, independently of commit identity.
+// Seal policy revision 1 binds version and schema, independently of commit identity.
         const artifactSchema = createHash("sha256")
           .update(JSON.stringify([1, version]))
           .update(OPENCLAW_AGENT_SCHEMA_SQL)
