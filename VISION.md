@@ -27,22 +27,23 @@ The current focus, in priority order:
 Quality and developer experience:
 
 - Security and safe defaults
-- Bug fixes, reliable updates, and actionable errors
-- Straightforward onboarding across CLI, web, and apps
+- Bug fixes, runtime stability, reliable updates, and actionable errors
+- Reliable setup and a straightforward first-run experience across CLI, web, and apps
 - Performance, reliable end-to-end tests, and better plugin APIs, tooling, and documentation
 
 Runtime capabilities:
 
 - Predictable sessions, automations, and subagents
 - Simpler memory and knowledge systems
-- Broad support for major model providers and messaging channels
+- Support for all major model providers
+- Reliable support for major messaging channels, with new channels driven by user demand
 - Better computer use and agent harnesses
 
 Operations and surfaces:
 
 - Reliable self-hosted deployments and optional hosted services
 - Efficient infrastructure, CI, and release pipelines
-- Consistent CLI, web, and companion app experiences on macOS, iOS, Android, Windows, and Linux
+- Consistent experiences and better everyday ergonomics across CLI, web, and companion apps on macOS, iOS, Android, Windows, and Linux
 
 Reliability means more than a successful first run.
 Updates should complete reliably, errors should explain the next useful action, and sessions, automations, and subagents should have predictable lifecycles.
