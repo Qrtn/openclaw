@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -17,11 +15,7 @@ import {
 import { createDeferred } from "../../test/helpers/promise.js";
 import { extractText } from "../../ui/src/lib/chat/message-extract.ts";
 import { buildChatMarkdown } from "../../ui/src/pages/chat/export.ts";
-import { createHostWorkspaceWriteTool } from "../agents/agent-tools.read.js";
-import { createExecTool } from "../agents/bash-tools.js";
 import * as embeddedAgent from "../agents/embedded-agent.js";
-import { createAgentHarnessHostCapabilities } from "../agents/harness/host-capability.js";
-import { projectEffectiveExecPolicy } from "../agents/session-permission-exec-mode.js";
 import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
@@ -32,7 +26,6 @@ import {
   listSessionEntriesReadOnly,
   listSessionParticipantsReadOnly,
   loadTranscriptEventsSync,
-  replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import {
   resolveSqliteTranscriptReadScope,
@@ -66,8 +59,12 @@ import {
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { captureSessionMutationRouting } from "./session-sharing-routing.js";
 import { createTalkClientAgentConsultRunner } from "./talk/client-agent-consult.js";
-import { resolveTalkAgentConsultAuthority } from "./talk/client-gateway-control.js";
-import { retainTalkClientRunAuthority } from "./talk/client-run-authority.js";
+import { createIdleRelayProvider } from "./talk/relay/index.test-support.js";
+import { closeRelaySession } from "./talk/relay/operations.js";
+import { createTalkRealtimeRelaySession } from "./talk/relay/session-create.js";
+import { relaySessions } from "./talk/relay/state.js";
+import { rememberUnifiedTalkSession } from "./talk/session-registry.js";
+import { prepareTalkSessionTarget } from "./talk/session-target.js";
 import {
   createGatewaySuiteHarness,
   dispatchInboundMessageMock,
@@ -808,188 +805,112 @@ describe("Direct Talk consult history after call closure", () => {
   );
 });
 
+describe("Gateway-relay Talk consult history after call closure", () => {
+  it.each([undefined, "abort", "detach"] as const)(
+    "settles accepted work with close disposition %s",
+    async (disposition) => {
+      const completeModel = expectDefined(
+        runEmbeddedAgent.getMockImplementation(),
+        "held model implementation",
+      );
+      runEmbeddedAgent.mockImplementation(async (params) => {
+        const result = await completeModel(params);
+        params.abortSignal?.throwIfAborted();
+        guardSessionManager(SessionManager.open(scope()), {
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          runId: params.runId,
+          prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
+        }).appendMessage(makeAgentAssistantMessage({ content: [{ type: "text", text: answer }] }));
+        return result;
+      });
+      const target = await prepareTalkSessionTarget(getRuntimeConfig(), sessionKey);
+      const relay = createTalkRealtimeRelaySession({
+        context,
+        connId: connectionId,
+        provider: createIdleRelayProvider(),
+        providerConfig: {},
+        controlSource: "transcript",
+        sessionTarget: target,
+        instructions: "Test relay",
+        tools: [],
+      });
+      rememberUnifiedTalkSession(relay.relaySessionId, {
+        kind: "realtime-relay",
+        connId: connectionId,
+        relaySessionId: relay.relaySessionId,
+        sessionTarget: target,
+      });
+      try {
+        const ack = await rpc("talk.client.toolCall", {
+          sessionKey,
+          relaySessionId: relay.relaySessionId,
+          voiceSessionId: relay.relaySessionId,
+          callId: "close-held-relay-consult",
+          name: REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
+          args,
+        });
+        await Promise.race([
+          modelStarted.promise,
+          getSessionWorkAdmissionRelease({
+            scope: storePath,
+            identities: [canonicalKey, sessionId],
+          }),
+        ]);
+        const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "relay model invocation");
+        const signal = expectDefined(run.abortSignal, "relay run cancellation");
+        expect(run).toMatchObject({ agentId, sessionId, sessionKey: canonicalKey });
+        expect(signal.aborted).toBe(false);
+        expect(ack.runId).toBe(run.runId);
+        await rpc("talk.session.close", {
+          sessionId: relay.relaySessionId,
+          ...(disposition ? { disposition } : {}),
+        });
+        expect(signal.aborted).toBe(disposition !== "detach");
+        releaseModel.resolve();
+        await waitForDispatchEnd();
+        await drainPublications();
+        const expectedAnswers = disposition === "detach" ? [answer] : [];
+        expect(
+          (await historyMessages()).map(extractText).filter((text) => text === answer),
+        ).toEqual(expectedAnswers);
+        const stored = loadTranscriptEventsSync(scope()).flatMap((event) => {
+          const message = asOptionalRecord(asOptionalRecord(event)?.message);
+          return message && extractText(message) === answer ? [message] : [];
+        });
+        expect(stored.map(extractText)).toEqual(expectedAnswers);
+        if (disposition === "detach") {
+          expect(stored[0]).not.toHaveProperty("display", false);
+        }
+      } finally {
+        const active = relaySessions.get(relay.relaySessionId);
+        if (active) {
+          await closeRelaySession(active, "completed");
+        }
+        releaseModel.resolve();
+      }
+    },
+  );
+});
+
 // Fixed model action through the real text and both Talk admission paths.
 it("dispatches permitted native actions once per logical request across text and Talk", async () => {
-  const config = getRuntimeConfig();
-  await prepareGatewayReplyRuntimeForTest({
-    force: true,
-    config: { ...config, tools: { ...config.tools, exec: { host: "gateway", mode: "full" } } },
-  });
-  await replaceSessionEntry(scope(), {
-    sessionId,
-    updatedAt: Date.now(),
-    permissionMode: "full",
-    execHost: "gateway",
-  });
-  const results: unknown[] = [];
-  const prepared: unknown[] = [];
-  let marker: string | undefined;
-  const resetWriteMarker = () =>
-    fs.rm(
-      path.join(path.dirname(expectDefined(marker, "native effect file")), "voice-parity-note.txt"),
-      { force: true },
-    );
-  runEmbeddedAgent.mockImplementation(async (params) => {
-    const admission = expectDefined(params.preparedRunAdmission, "real ingress admission");
-    const admittedRunContext = await admission.admit("plugin-harness", "parity-test-model");
-    prepared.push({
-      principal: admission.readOperatorAuthority?.()?.profileId,
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-      workspaceDir: params.workspaceDir,
-      cwd: params.cwd,
-      permissionMode: params.permissionMode,
-      sessionRoot: params.sessionRoot,
-      execOverrides: params.execOverrides,
-      bashElevated: params.bashElevated,
-      senderId: params.senderId,
-      senderIsOwner: params.senderIsOwner,
-      messageProvider: params.messageProvider,
-      messageChannel: params.messageChannel,
-      carriesControlAuthority: Object.hasOwn(params, "operatorAuthority"),
-      approvalReviewerDeviceId: params.approvalReviewerDeviceId,
-    });
-    const host = createAgentHarnessHostCapabilities({
-      pluginId: "parity-test-model",
-      attempt: {
-        agentId,
-        sessionId: params.sessionId,
-        sessionKey: params.sessionKey,
-        runId: params.runId,
-        workspaceDir: params.workspaceDir,
-        cwd: params.cwd,
-        config: params.config,
-        admittedRunContext,
-      },
-    });
-    const policy = projectEffectiveExecPolicy({
-      base: { host: "gateway", mode: "full" },
-      overrides: params.execOverrides,
-      permissionPolicy: { mode: params.permissionMode ?? "read-only" },
-    });
-    marker = path.join(params.workspaceDir, "voice-parity-effects");
-    const [tool, writeTool] = host.capabilities.bindToolSurface([
-      createExecTool({
-        ...policy,
-        config: params.config,
-        cwd: params.workspaceDir,
-        agentId,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        runId: params.runId,
-        allowBackground: false,
-      }),
-      createHostWorkspaceWriteTool(params.workspaceDir),
-    ]);
-    try {
-      const result = await expectDefined(tool, "bound native exec").execute("same-model-action", {
-        command: "printf 'effect\n' >> voice-parity-effects",
-        workdir: params.workspaceDir,
-        yieldMs: 10000,
-      });
-      const written = await expectDefined(writeTool, "bound filesystem action").execute(
-        "same-write-action",
-        { path: "voice-parity-note.txt", content: "same permitted note" },
-      );
-      expect(written.content).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "text",
-            text: expect.stringContaining("Successfully wrote"),
-          }),
-        ]),
-      );
-      expect(
-        await fs.readFile(path.join(params.workspaceDir, "voice-parity-note.txt"), "utf8"),
-      ).toBe("same permitted note");
-      results.push(result.details);
-      expect(result.details).toMatchObject({ status: "completed", exitCode: 0 });
-      return { payloads: [{ text: "Done." }], meta: { durationMs: 1 } };
-    } finally {
-      host.close();
-    }
-  });
-  await rpc("chat.send", {
+  const { runTalkNativeActionParity } = await import("./server.talk-native-action.test-support.js");
+  await runTalkNativeActionParity({
+    context,
+    client,
+    agentId,
     sessionKey,
-    message: "Carry out the action",
-    idempotencyKey: "parity-text",
+    canonicalKey,
+    sessionId,
+    storePath,
+    voiceSessionId,
+    connectionId,
+    runEmbeddedAgent,
+    rpc,
+    consult,
+    waitForDispatchEnd,
   });
-  await waitForDispatchEnd();
-  expect(results).toHaveLength(1);
-  const retained = await retainTalkClientRunAuthority({ client, context });
-  try {
-    const runner = createTalkClientAgentConsultRunner({
-      config: getRuntimeConfig(),
-      context,
-      sessionTarget: {
-        agentId,
-        sessionKey,
-        canonicalKey,
-        storePath,
-        assertCurrent: captureSessionMutationRouting(getRuntimeConfig(), undefined, [
-          { agentId, sessionKey },
-        ]),
-      },
-      ownerConnId: connectionId,
-      runAuthority: retained,
-      authority: resolveTalkAgentConsultAuthority(client.connect.scopes, client),
-      getVoiceSessionId: () => voiceSessionId,
-      initialItems: [],
-    });
-    await resetWriteMarker();
-    expect(await runner.runArgs({ question: "Carry out the action" })).toEqual({ text: "Done." });
-    expect(results).toHaveLength(2);
-    await resetWriteMarker();
-    await consult("Carry out the action", "parity-provider-call");
-    await waitForDispatchEnd();
-    expect(results).toHaveLength(3);
-    expect(prepared[0]).toMatchObject({
-      principal: expectDefined(client.authenticatedUserProfile, "authenticated caller profile")
-        .profileId,
-    });
-    expect(prepared[1]).toEqual(prepared[0]);
-    expect(prepared[2]).toEqual(prepared[0]);
-    const replay = vi.fn<RespondFn>();
-    await handleGatewayRequest({
-      req: {
-        type: "req",
-        id: randomUUID(),
-        method: "talk.client.toolCall",
-        params: {
-          sessionKey,
-          voiceSessionId,
-          callId: "parity-provider-call",
-          name: REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
-          args: { question: "Carry out the action" },
-        },
-      },
-      context,
-      client,
-      respond: replay,
-      isWebchatConnect: () => true,
-    });
-    // Completed work cannot be advertised as a new active subscription. Keep
-    // that terminal refusal, without treating a retransmit as new work.
-    expect(replay.mock.calls[0]).toMatchObject([
-      false,
-      undefined,
-      {
-        code: "UNAVAILABLE",
-        message: "Realtime agent consult completed before the tool result subscription started.",
-      },
-    ]);
-    await waitForDispatchEnd();
-    expect(results).toHaveLength(3);
-    await resetWriteMarker();
-    await consult("Carry out the action", "parity-provider-fresh-call");
-    await waitForDispatchEnd();
-    expect(results).toHaveLength(4);
-    expect(await fs.readFile(expectDefined(marker, "native effect file"), "utf8")).toBe(
-      "effect\neffect\neffect\neffect\n",
-    );
-  } finally {
-    retained.release();
-  }
 });
 
 it("preserves the original operator source through chat-backed capability adaptation", async () => {

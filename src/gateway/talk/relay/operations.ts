@@ -651,6 +651,9 @@ export async function cancelTalkRealtimeRelayTurn(params: {
 export function stopTalkRealtimeRelaySession(params: {
   relaySessionId: string;
   connId: string;
+  disposition?: RealtimeVoiceCloseOptions["disposition"];
 }): void | Promise<void> {
-  return closeRelaySession(getRelaySession(params.relaySessionId, params.connId), "completed");
+  return closeRelaySession(getRelaySession(params.relaySessionId, params.connId), "completed", {
+    disposition: params.disposition ?? "abort",
+  });
 }

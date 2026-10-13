@@ -119,8 +119,12 @@ function defaultRelayResponse(method: string, supportsBargeIn?: boolean) {
     : {};
 }
 
-function createClient(supportsBargeIn?: boolean): RealtimeTalkTransportContext["client"] {
+function createClient(
+  supportsBargeIn?: boolean,
+  supportsDetach = false,
+): RealtimeTalkTransportContext["client"] {
   return {
+    hello: { features: { capabilities: supportsDetach ? ["talk-session-close-disposition"] : [] } },
     addEventListener: vi.fn((listener: GatewayListener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -237,6 +241,79 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
     processors.length = 0;
     inputSinks.length = 0;
     createdSources.length = 0;
+  });
+
+  it.each([true, false])("closes explicit Stop with abort (supported=%s)", async (supported) => {
+    const client = createClient(undefined, supported);
+    const transport = await createTransport({ client });
+    await startTransport(transport);
+    await transport.stop();
+    expect(requestCallsFor(client, "talk.session.close")).toEqual([
+      [
+        "talk.session.close",
+        { sessionId: "relay-1", ...(supported ? { disposition: "abort" } : {}) },
+        { timeoutMs: 8_000 },
+      ],
+    ]);
+  });
+
+  it.each([true, false])(
+    "detaches on append timeout before status cleanup (supported=%s)",
+    async (supported) => {
+      const client = createClient(undefined, supported);
+      const onStatus = vi.fn();
+      const append = createDeferred();
+      const failed = createDeferred();
+      vi.mocked(client.request).mockImplementation(async (method) =>
+        method === "talk.session.appendAudio" ? append.promise : defaultRelayResponse(method),
+      );
+      const transport = await createTransport({ client, callbacks: { onStatus } });
+      await startTransport(transport);
+      onStatus.mockImplementation(() => {
+        void transport.stop();
+        failed.resolve();
+      });
+      pumpMicrophone(new Float32Array(4096));
+      append.reject(new Error("Request timed out: talk.session.appendAudio"));
+      await failed.promise;
+      await transport.stop();
+      expect(onStatus).toHaveBeenCalledWith("error", "Request timed out: talk.session.appendAudio");
+      expect(requestCallsFor(client, "talk.session.close")).toEqual([
+        [
+          "talk.session.close",
+          { sessionId: "relay-1", ...(supported ? { disposition: "detach" } : {}) },
+          { timeoutMs: 8_000 },
+        ],
+      ]);
+    },
+  );
+
+  it("detaches when audio playback throws", async () => {
+    const client = createClient(undefined, true);
+    const onStatus = vi.fn();
+    const transport = await createTransport({ client, callbacks: { onStatus } });
+    await startTransport(transport);
+    const failedPlayback = vi
+      .spyOn(MockAudioContext.prototype, "createBufferSource")
+      .mockImplementationOnce(() => {
+        throw new Error("Playback failed");
+      });
+    try {
+      expect(() =>
+        emitTalkEvent({ relaySessionId: "relay-1", type: "audio", audioBase64: "AAAA" }),
+      ).toThrow("Playback failed");
+      expect(onStatus).toHaveBeenCalledWith("error", "Playback failed");
+      expect(requestCallsFor(client, "talk.session.close")).toEqual([
+        [
+          "talk.session.close",
+          { sessionId: "relay-1", disposition: "detach" },
+          { timeoutMs: 8_000 },
+        ],
+      ]);
+    } finally {
+      failedPlayback.mockRestore();
+      await transport.stop();
+    }
   });
 
   it("closes relay resources on microphone loss even when status delivery throws", async () => {
@@ -1455,7 +1532,7 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
   it("closes without releasing delayed results when playback cancellation fails", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const client = createClient();
+    const client = createClient(undefined, true);
     vi.mocked(client["request"]).mockImplementation(async (method) => {
       if (method === "talk.client.toolCall") {
         return {
@@ -1494,7 +1571,7 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
 
     expect(requestCallsFor(client, "talk.session.submitToolResult")).toHaveLength(0);
     expect(requestCallsFor(client, "talk.session.close")).toEqual([
-      ["talk.session.close", { sessionId: "relay-1" }, { timeoutMs: 8_000 }],
+      ["talk.session.close", { sessionId: "relay-1", disposition: "detach" }, { timeoutMs: 8_000 }],
     ]);
     expect(onStatus).toHaveBeenCalledWith("error", "cancel failed");
   });
