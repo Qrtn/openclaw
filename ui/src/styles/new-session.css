@@ -822,9 +822,16 @@ html:is(.openclaw-native-macos, .openclaw-native-desktop) .new-session-page__inc
   --oc-overlay-max-width: min(360px, calc(100vw - 24px));
 }
 
+.new-session-page__environment-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .new-session-page__environment-picker {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   max-height: min(360px, calc(var(--oc-overlay-available-height, 70vh) - 2px));
   overflow: hidden;
 }
