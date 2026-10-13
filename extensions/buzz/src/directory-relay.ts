@@ -43,7 +43,6 @@ async function queryBuzzDirectoryBatch(params: {
     result: () => {},
     onTimeout: params.onTimeout,
     closeRelayOnTimeout: !params.onTimeout,
-    checkAbortAfterSubscribe: true,
   });
 }
 
@@ -178,65 +177,58 @@ export function startBuzzDirectoryRelay(params: {
       reportFatalError(new Error("Timed out loading Buzz profile subscriptions"));
     }, PROFILE_SUBSCRIPTION_READY_TIMEOUT_MS);
     profileGeneration = generation;
-    try {
-      for (const authors of authorChunks) {
-        const markReady = () => {
-          if (profileGeneration !== generation) {
-            return;
-          }
-          generation.pendingReady -= 1;
-          if (generation.pendingReady === 0 && generation.readyTimeout) {
-            clearTimeout(generation.readyTimeout);
-            generation.readyTimeout = undefined;
-          }
-          if (generation.pendingReady === 0) {
-            applyQueuedProfilePublicKeys();
-          }
-        };
-        const subscription = openBuzzRelaySubscription(
-          params.relay,
-          [
-            {
-              kinds: [BUZZ_PROFILE_KIND],
-              authors,
-              limit: authors.length,
-            },
-          ],
+    for (const authors of authorChunks) {
+      const markReady = () => {
+        if (profileGeneration !== generation) {
+          return;
+        }
+        generation.pendingReady -= 1;
+        if (generation.pendingReady === 0 && generation.readyTimeout) {
+          clearTimeout(generation.readyTimeout);
+          generation.readyTimeout = undefined;
+        }
+        if (generation.pendingReady === 0) {
+          applyQueuedProfilePublicKeys();
+        }
+      };
+      const subscription = openBuzzRelaySubscription(
+        params.relay,
+        [
           {
-            onevent: (event) => {
-              params.state.applyProfileEvent(event);
-            },
-            oneose: markReady,
-            onclose: (reason) => {
-              if (profileGeneration === generation) {
-                queuedProfilePublicKeys = undefined;
-                if (reason === "relay connection closed by us") {
-                  if (generation.readyTimeout) {
-                    clearTimeout(generation.readyTimeout);
-                  }
-                  profileGeneration = undefined;
-                } else {
-                  closeProfileGeneration(PROFILE_SUBSCRIPTION_FAILED_REASON, subscription);
-                }
-              }
-              if (
-                reason !== PROFILE_SUBSCRIPTION_REPLACED_REASON &&
-                reason !== PROFILE_SUBSCRIPTION_FAILED_REASON &&
-                reason !== DIRECTORY_SHUTDOWN_REASON &&
-                reason !== "relay connection closed by us"
-              ) {
-                reportError(new Error(`Buzz profile subscription closed: ${reason}`));
-              }
-            },
+            kinds: [BUZZ_PROFILE_KIND],
+            authors,
+            limit: authors.length,
           },
-        );
-        generation.subscriptions.push(subscription);
-      }
-    } catch (error) {
-      if (profileGeneration === generation) {
-        closeProfileGeneration(PROFILE_SUBSCRIPTION_REPLACED_REASON);
-      }
-      reportError(error);
+        ],
+        {
+          onevent: (event) => {
+            params.state.applyProfileEvent(event);
+          },
+          oneose: markReady,
+          onclose: (reason) => {
+            if (profileGeneration === generation) {
+              queuedProfilePublicKeys = undefined;
+              if (reason === "relay connection closed by us") {
+                if (generation.readyTimeout) {
+                  clearTimeout(generation.readyTimeout);
+                }
+                profileGeneration = undefined;
+              } else {
+                closeProfileGeneration(PROFILE_SUBSCRIPTION_FAILED_REASON, subscription);
+              }
+            }
+            if (
+              reason !== PROFILE_SUBSCRIPTION_REPLACED_REASON &&
+              reason !== PROFILE_SUBSCRIPTION_FAILED_REASON &&
+              reason !== DIRECTORY_SHUTDOWN_REASON &&
+              reason !== "relay connection closed by us"
+            ) {
+              reportError(new Error(`Buzz profile subscription closed: ${reason}`));
+            }
+          },
+        },
+      );
+      generation.subscriptions.push(subscription);
     }
   };
 
