@@ -1,5 +1,5 @@
 import { ENV_SECRET_REF_ID_RE } from "./ref-contract.js";
-import { readSelectedSecretStoreEntries } from "./store/secret-store.js";
+import type { readSelectedSecretStoreEntries } from "./store/secret-store.js";
 
 export type SetupSecretMigrationInspection = {
   name: string;
@@ -16,8 +16,12 @@ export async function inspectSetupSecretMigration(params: {
     throw new Error("Setup secret migration inspection must contain at most 16 names.");
   }
   const validNames = names.filter((name) => ENV_SECRET_REF_ID_RE.test(name));
+  if (validNames.length === 0) {
+    return names.map((name) => ({ name, status: "missing" }));
+  }
   let entries: Awaited<ReturnType<typeof readSelectedSecretStoreEntries>>;
   try {
+    const { readSelectedSecretStoreEntries } = await import("./store/secret-store.js");
     entries = await readSelectedSecretStoreEntries({
       names: validNames,
       database: { env: params.env },

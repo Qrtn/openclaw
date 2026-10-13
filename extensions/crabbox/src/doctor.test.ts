@@ -332,6 +332,31 @@ describe("Crabbox setup secret migration", () => {
   const ready: CrabboxDoctorRegistrationHost["inspectSetupSecrets"] = async (names) =>
     names.map((name) => ({ name, status: "ready" }));
 
+  it("does not inspect secrets or spawn Crabbox without legacy secret names", async () => {
+    const inspect = vi.fn(ready);
+    const spawn = vi.spyOn(processRuntime, "runCommandWithTimeout");
+    try {
+      const check = captureCrabboxDoctorCheck(CRABBOX_SETUP_SECRETS_CHECK_ID, inspect);
+      const base = context({});
+      for (const cfg of [
+        {},
+        base.cfg,
+        context({
+          setupSecrets: { TOKEN: { source: "store", provider: "default", id: "TOKEN" } },
+        }).cfg,
+        context({ setupEnv: [] }).cfg,
+      ]) {
+        const ctx = { ...base, cfg };
+        await check.detect(ctx);
+        await check.repair!(ctx, []);
+      }
+      expect(inspect).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
   it("migrates complete profiles without mutating audit input and is idempotent", async () => {
     const check = captureCrabboxDoctorCheck(CRABBOX_SETUP_SECRETS_CHECK_ID, ready);
     const ctx = context({ setup: "install", setupEnv: ["TOKEN", "PASSWORD"], class: "standard" });

@@ -142,6 +142,15 @@ function createCrabboxSetupSecretsCheck(host: CrabboxDoctorRegistrationHost): He
   const inspect = async (ctx: Parameters<HealthCheck["detect"]>[0]) => {
     const changes: string[] = [];
     const findings: HealthFinding[] = [];
+    if (
+      !Object.values(ctx.cfg.cloudWorkers?.profiles ?? {}).some(
+        (profile) =>
+          profile.provider.trim().toLowerCase() === CRABBOX_WORKER_PROVIDER_ID &&
+          readRecord(profile.settings)?.setupEnv !== undefined,
+      )
+    ) {
+      return { config: ctx.cfg, changes, findings };
+    }
     const config = structuredClone(ctx.cfg);
     for (const [profileId, profile] of Object.entries(config.cloudWorkers?.profiles ?? {})) {
       const settings = readRecord(profile.settings);
@@ -166,7 +175,7 @@ function createCrabboxSetupSecretsCheck(host: CrabboxDoctorRegistrationHost): He
       ) {
         reason = "legacy setupEnv is not a bounded list of distinct environment names";
       } else {
-        const facts = await host.inspectSetupSecrets(legacy, ctx.env);
+        const facts = legacy.length ? await host.inspectSetupSecrets(legacy, ctx.env) : [];
         const problems = facts.filter(({ status }) => status !== "ready");
         if (facts.length !== legacy.length || problems.length) {
           reason = problems.length
