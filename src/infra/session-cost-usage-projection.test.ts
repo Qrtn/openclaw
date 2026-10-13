@@ -91,6 +91,32 @@ function createSource(
 }
 
 describe("usage cache projections", () => {
+  it.each(["missing", "truncated"])(
+    "repairs %s bodies despite partition budget deferral",
+    async (mode) => {
+      const file = createFile("corrupt-deferred");
+      const row = createRow(file, [{ timestamp: dayStart, cost: 1 }]);
+      const invalid: string[] = [];
+      const result = await projectSessionCostSummaries({
+        ...createSource(
+          [{ ...row, bodyBytes: mode === "missing" ? 0 : row.blob.byteLength - 1 }],
+          [file],
+        ),
+        deferredPaths: new Set([row.key]),
+        onInvalidBody: (key) => invalid.push(key),
+        files: [file],
+        sessions: [{ sessionFile: file.filePath }],
+        pricingFingerprint,
+      });
+      expect(result).toMatchObject({
+        summaries: [null],
+        staleSessionFiles: [file.sourcePath],
+        cacheStatus: { staleFiles: 1 },
+      });
+      expect(invalid).toEqual([row.key]);
+    },
+  );
+
   it.each([false, true])(
     "refreshes a budget-deferred aggregate only when stale=%s",
     async (stale) => {
