@@ -861,8 +861,9 @@ describe("X publication production-owner composition", () => {
           } else {
             expect(staleSnapshots.has(kind)).toBe(true);
             expect(ownerRetiredInCatalogWait).toBe(true);
+            // The outer Gateway binding surfaces retirement before the inner publication error.
             expect(outcomes.get(kind), kind).toMatchObject({
-              error: expect.stringContaining("Public ingress owner is no longer current"),
+              error: "Error: Gateway instance unavailable for sessions.create",
             });
           }
         }
