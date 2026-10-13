@@ -75,7 +75,8 @@ that introduces its replacement. Migration sequence:
 6. Wait through the announced migration window.
 7. Remove only with explicit maintainer approval for a later ordinary stable release.
 
-Deprecated records must include a warning start date, replacement, and docs link.
+Deprecated records must include a warning start date, replacement, docs link,
+and either a final removal date or an explicitly approved removal gate.
 The `stable-deprecation-period` gate records preparation for removal in a later
 ordinary stable release. It does not set a deadline or authorize removal.
 Leave `removeAfter` unset until the owning maintainer approves and announces the
@@ -87,7 +88,10 @@ That bound is not an automatic expiry: a source annotation, elapsed registry
 date, or undated gate cannot substitute for shipped diagnostics, migration
 instructions, supported-reader checks, and the announced window. The
 [removal timeline](/plugins/sdk-migration/removal-timeline) describes the
-additional shipped-surface gate. No SDK major release is required.
+additional shipped-surface gate. Legacy `next-plugin-sdk-major` registry values
+require owner migration to the later-stable-release policy. Do not add an
+open-ended removal window without an approved gate unless maintainers explicitly
+decide it is permanent compatibility and mark it `active` instead.
 
 ## Current compatibility areas
 
