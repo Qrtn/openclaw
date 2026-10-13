@@ -47,7 +47,17 @@ function encodeUsageCostPartition(
 export function decodeUsageCostPartition(
   valueJson: string,
   blob: Uint8Array | null,
-): SessionUsageRollupData | undefined {
+): SessionUsageRollupData | undefined;
+export function decodeUsageCostPartition(
+  valueJson: string,
+  blob: Uint8Array | null,
+  budget: { remainingBytes: number },
+): SessionUsageRollupData | null | undefined;
+export function decodeUsageCostPartition(
+  valueJson: string,
+  blob: Uint8Array | null,
+  budget?: { remainingBytes: number },
+): SessionUsageRollupData | null | undefined {
   if (!blob) {
     return undefined;
   }
@@ -62,6 +72,12 @@ export function decodeUsageCostPartition(
       typeof metadata.sha256 !== "string"
     ) {
       return undefined;
+    }
+    if (budget) {
+      if (metadata.bytes > budget.remainingBytes) {
+        return null;
+      }
+      budget.remainingBytes -= metadata.bytes;
     }
     const raw =
       metadata.encoding === "zstd"

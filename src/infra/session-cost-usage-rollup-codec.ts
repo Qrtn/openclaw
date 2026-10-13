@@ -151,10 +151,28 @@ export function decodeUsageCostRollup(
   valueJson: string,
   pricingFingerprint: string,
   blob: Uint8Array | null,
-): UsageCostRollupEntry | undefined {
+): UsageCostRollupEntry | undefined;
+export function decodeUsageCostRollup(
+  valueJson: string,
+  pricingFingerprint: string,
+  blob: Uint8Array | null,
+  budget: { remainingBytes: number },
+): UsageCostRollupEntry | null | undefined;
+export function decodeUsageCostRollup(
+  valueJson: string,
+  pricingFingerprint: string,
+  blob: Uint8Array | null,
+  budget?: { remainingBytes: number },
+): UsageCostRollupEntry | null | undefined {
   const envelope = decodeUsageCostRollupEnvelope(valueJson, pricingFingerprint);
   if (!envelope || !blob || blob.byteLength !== envelope.body.storedBytes) {
     return undefined;
+  }
+  if (budget) {
+    if (envelope.body.bytes > budget.remainingBytes) {
+      return null;
+    }
+    budget.remainingBytes -= envelope.body.bytes;
   }
   try {
     const raw =

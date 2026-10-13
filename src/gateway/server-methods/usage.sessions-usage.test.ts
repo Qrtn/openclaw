@@ -3,6 +3,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createEmptyCostUsageTotals } from "../../infra/session-cost-usage-totals.js";
@@ -12,6 +13,9 @@ import type { SessionsUsageResult } from "../../shared/usage-types.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
+import { bindSessionRowProjection } from "../session-row-projection-access.js";
+import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
+import * as sessionSharingPreparation from "../session-sharing-preparation.js";
 
 vi.mock("../../config/config.js", () => ({ getRuntimeConfig: vi.fn(() => TEST_RUNTIME_CONFIG) }));
 vi.mock("../../config/sessions/combined-store-gateway-read.js", async () => {
@@ -92,7 +96,11 @@ const BASE_USAGE_RANGE = { startDate: "2026-02-01", endDate: "2026-02-02", limit
 async function runSessionsUsageMethod(
   method: "sessions.usage" | "sessions.usage.timeseries" | "sessions.usage.logs",
   params: Record<string, unknown>,
-  options: { signal?: AbortSignal; respond?: ReturnType<typeof vi.fn> } = {},
+  options: {
+    signal?: AbortSignal;
+    respond?: ReturnType<typeof vi.fn>;
+    context?: { getRuntimeConfig: () => OpenClawConfig; sessionRowProjectionOwner?: object };
+  } = {},
 ) {
   const respond = options.respond ?? vi.fn();
   const handler = expectDefined(usageHandlers[method], "usage handler");
@@ -100,7 +108,7 @@ async function runSessionsUsageMethod(
     respond,
     params,
     signal: options.signal,
-    context: { getRuntimeConfig: () => TEST_RUNTIME_CONFIG },
+    context: options.context ?? { getRuntimeConfig: () => TEST_RUNTIME_CONFIG },
   } as unknown as Parameters<typeof handler>[0]);
   return respond;
 }
@@ -114,6 +122,7 @@ function readResult(respond: ReturnType<typeof vi.fn>): SessionsUsageResult {
 function mockCombinedStore(
   store: Record<string, SessionEntry>,
   owners: ReadonlyArray<readonly [string, string]>,
+  storePath?: string,
 ) {
   vi.mocked(loadCombinedSessionStoreForGatewayCoreAsync).mockResolvedValue({
     durableTargets: [],
@@ -127,7 +136,10 @@ function mockCombinedStore(
           entry: store[key],
           readSourceEntry: (sourceKey: string) => store[sourceKey],
           resolveSourceKey: (sourceKey: string) => sourceKey,
-          storeTarget: { agentId, storePath: `/tmp/agents/${agentId}/agent/openclaw-agent.sqlite` },
+          storeTarget: {
+            agentId,
+            storePath: storePath ?? `/tmp/agents/${agentId}/agent/openclaw-agent.sqlite`,
+          },
         },
       ]),
     ),
@@ -337,6 +349,117 @@ describe("sessions.usage", () => {
       }),
     );
     expect(loadSessionCostSummariesFromCache).not.toHaveBeenCalled();
+  });
+
+  it("applies the usage size budget to the selected creator", async () => {
+    const unrelated = Array.from({ length: 20_001 }, (_, index) => ({
+      sessionId: `other-creator-${index}`,
+      sessionFile: `/tmp/other-creator-${index}.jsonl`,
+      mtime: index + 1,
+    }));
+    const selected = {
+      sessionId: "selected-creator",
+      sessionFile: "/tmp/selected-creator.jsonl",
+      mtime: 1,
+    };
+    const store = Object.fromEntries(
+      unrelated.map(({ sessionId, mtime }) => [
+        `agent:main:${sessionId}`,
+        { sessionId, updatedAt: mtime, createdActor: { type: "system" as const } },
+      ]),
+    );
+    mockCombinedStore(
+      store,
+      Object.keys(store).map((key) => [key, "main"] as const),
+    );
+    vi.mocked(discoverAllSessions).mockResolvedValueOnce([...unrelated, selected]);
+    vi.mocked(loadSessionCostSummariesFromCache).mockImplementationOnce(async ({ sessions }) => ({
+      summaries: sessions.map(() => ({ ...createEmptyCostUsageTotals(), totalTokens: 7 })),
+      cacheStatus: {
+        status: "fresh",
+        cachedFiles: sessions.length,
+        pendingFiles: 0,
+        staleFiles: 0,
+      },
+    }));
+    const result = readResult(
+      await runSessionsUsage({ ...BASE_USAGE_RANGE, creatorKey: '["unknown"]', limit: 1 }),
+    );
+    expect(result.sessions).toMatchObject([{ key: "agent:main:selected-creator" }]);
+    expect(result.totals.totalTokens).toBe(7);
+  });
+
+  it("uses resident authority for context searches and prepares only an unavailable row", async () => {
+    await withOpenClawTestState({ label: "usage-context-resident" }, async (state) => {
+      const storePath = state.statePath("agents", "main", "agent", "openclaw-agent.sqlite");
+      const store: Record<string, SessionEntry> = {};
+      const report = {
+        source: "run" as const,
+        generatedAt: 1,
+        systemPrompt: { chars: 100, projectContextChars: 40, nonProjectContextChars: 60 },
+        injectedWorkspaceFiles: [],
+        skills: { promptChars: 0, entries: [] },
+        tools: { listChars: 0, schemaChars: 0, entries: [] },
+      };
+      const discovered = Array.from({ length: 61 }, (_, index) => {
+        const sessionId = `context-${index}`;
+        const key = `agent:main:${sessionId}`;
+        const entry = { sessionId, updatedAt: index + 1, systemPromptReport: report };
+        store[key] = entry;
+        replaceSessionEntrySync({ agentId: "main", sessionKey: key, storePath }, entry);
+        return {
+          sessionId,
+          sessionFile: `sqlite:main:${sessionId}:${storePath}`,
+          mtime: index + 1,
+        };
+      });
+      mockCombinedStore(
+        store,
+        Object.keys(store).map((key) => [key, "main"] as const),
+        storePath,
+      );
+      vi.mocked(discoverAllSessions).mockResolvedValueOnce(discovered);
+      const projection = createSessionRowProjectionFixture({
+        cfg: TEST_RUNTIME_CONFIG,
+        store,
+        storePath,
+        agentId: "main",
+      });
+      const readCapabilityEntry = projection.readCapabilityEntry.bind(projection);
+      const unavailableKey = "agent:main:context-60";
+      vi.spyOn(projection, "readCapabilityEntry").mockImplementation((query) =>
+        query.key === unavailableKey ? undefined : readCapabilityEntry(query),
+      );
+      const context = bindSessionRowProjection(
+        { getRuntimeConfig: () => TEST_RUNTIME_CONFIG },
+        () => projection,
+      );
+      const reads = vi.spyOn(sessionSharingPreparation, "prepareSessionMutationFacts");
+      try {
+        const result = readResult(
+          await runSessionsUsageMethod(
+            "sessions.usage",
+            {
+              range: "all",
+              projection: "overview",
+              query: "has:context",
+              includeContextWeight: true,
+            },
+            { context },
+          ),
+        );
+        expect(result.overview?.total).toBe(61);
+        expect(result.sessions).toHaveLength(50);
+        expect(result.sessions.every((row) => row.hasContextWeight)).toBe(true);
+        expect(result.sessions.find((row) => row.key === unavailableKey)?.contextWeight).toEqual(
+          report,
+        );
+        expect(reads.mock.calls.map(([params]) => params.sessionKey)).toEqual([unavailableKey]);
+      } finally {
+        reads.mockRestore();
+        projection.dispose();
+      }
+    });
   });
 
   it.each([

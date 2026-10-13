@@ -38,11 +38,13 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
 import { writeSessionCostUsageRollupInDatabase } from "./session-cost-usage-cache.kernel.js";
-import { readSessionCostUsageRollupRows } from "./session-cost-usage-cache.test-support.js";
+import { prepareSessionCostUsageRefreshLock } from "./session-cost-usage-cache.sqlite.js";
 import {
-  decodeUsageCostPartition,
-  USAGE_COST_PARTITION_SCOPE,
-} from "./session-cost-usage-partitions.js";
+  readSessionCostUsageRollupRows,
+  readSessionCostUsageRollupEntry,
+} from "./session-cost-usage-cache.test-support.js";
+import { partitionUsageCostRollup } from "./session-cost-usage-partitions.js";
+import { encodeUsageCostRollup } from "./session-cost-usage-rollup-codec.js";
 import { prepareUsageCostWorker, runUsageCostWorker } from "./session-cost-usage-worker-runtime.js";
 import {
   discoverAllSessions,
@@ -121,6 +123,14 @@ if (!isMainThread) {
     };
   }
   const { DatabaseSync } = require("node:sqlite");
+  const zlib = require("node:zlib");
+  const decompress = zlib.zstdDecompressSync;
+  if (decompress) {
+    zlib.zstdDecompressSync = function(data, options) {
+      record({ kind: "decompress", outputLimit: options?.maxOutputLength ?? 0 });
+      return Reflect.apply(decompress, this, [data, options]);
+    };
+  }
   const prepare = DatabaseSync.prototype.prepare;
   DatabaseSync.prototype.prepare = function(sql) {
     const statement = Reflect.apply(prepare, this, [sql]);
@@ -149,12 +159,14 @@ if (!isMainThread) {
           if (args.includes("session-cost-usage-projection-v1")) {
             record({ kind: "partitions" });
           }
-          if (!args.includes("session-cost-usage-rollup-v3")) {
+          const rollup = args.includes("session-cost-usage-rollup-v3");
+          if (!rollup && !args.includes("session-cost-usage-projection-v1")) {
             return Reflect.apply(original, this, args);
           }
-          record({ kind: "cache" });
+          if (rollup) record({ kind: "cache" });
           const observeRow = (row) => record({
-            kind: "cache-row", key: row.key,
+            kind: rollup ? "cache-row" : "partition-row", key: row.key,
+            blobBytes: row.blob?.byteLength ?? 0,
             valueBytes: typeof row.value_json === "string"
               ? Buffer.byteLength(row.value_json)
               : ArrayBuffer.isView(row.value_json) ? row.value_json.byteLength : 0,
@@ -197,7 +209,13 @@ if (!isMainThread) {
               | { kind: "hot-watermark" }
               | { kind: "cache" }
               | { kind: "partitions" }
-              | { kind: "cache-row"; key: string; valueBytes: number }
+              | { kind: "decompress"; outputLimit: number }
+              | {
+                  kind: "cache-row" | "partition-row";
+                  key: string;
+                  valueBytes: number;
+                  blobBytes: number;
+                }
               | { kind: "transcript"; method: string; start: number },
         ),
   };
@@ -856,8 +874,19 @@ it("defers oversized exact ranges without treating valid aggregates as corrupt",
       expect(exact).toMatchObject({
         kind: "sessions",
         summaries: [null],
-        cacheStatus: { status: "stale", cachedFiles: 0, pendingFiles: 1 },
+        cacheStatus: { status: "partial", cachedFiles: 0, pendingFiles: 1, staleFiles: 0 },
+        staleSessionFiles: [],
         invalidRows: [],
+      });
+      const computing = await loadSessionCostSummariesFromCache({
+        agentId,
+        sessions: [{ sessionFile }],
+        startMs: timestamp,
+        endMs: timestamp + 1,
+      });
+      expect(computing).toMatchObject({
+        summaries: [null],
+        cacheStatus: { status: "partial", pendingFiles: 1, staleFiles: 0 },
       });
       expect((await probe.read()).filter((entry) => entry.kind === "transcript")).toEqual([]);
       const aligned = await loadSessionCostSummariesFromCache({
@@ -873,70 +902,127 @@ it("defers oversized exact ranges without treating valid aggregates as corrupt",
   });
 });
 
-it("replaces every monthly partition after cache damage and filters within and across months", async () => {
+it("bounds stored and compressed cache payloads while keeping other sessions available", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const config = {};
-    const agentId = "usage-missing-partition";
-    const sessionFile = state.path("usage-missing-partition.jsonl");
-    const record = (day: number) =>
-      JSON.stringify({
-        type: "message",
-        timestamp: new Date(Date.UTC(2026, 8, day)).toISOString(),
-        message: {
-          role: "assistant",
-          model: "fixture",
-          provider: "test",
-          usage: { input: 10, output: 0, totalTokens: 10, cost: { total: 1 } },
-        },
-      }) + "\n";
-    await fs.writeFile(sessionFile, record(18) + record(19) + record(31));
-    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
-    runOpenClawAgentWriteTransaction(
-      ({ db }) =>
-        db
-          .prepare(
-            "DELETE FROM cache_entries WHERE (scope, key) IN (SELECT scope, key FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1)",
-          )
-          .run(USAGE_COST_PARTITION_SCOPE),
-      { agentId },
-    );
-    await fs.appendFile(sessionFile, record(20));
-    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
-    const stored = runOpenClawAgentWriteTransaction(
-      ({ db }) =>
-        db
-          .prepare("SELECT key, value_json, blob FROM cache_entries WHERE scope = ? ORDER BY key")
-          .all(USAGE_COST_PARTITION_SCOPE),
-      { agentId },
-    );
-    expect(stored.map((row) => String(row.key).slice(-10))).toEqual(["2026-09-01", "2026-10-01"]);
-    expect(
-      stored.map((row) => {
-        if (typeof row.value_json !== "string" || !(row.blob instanceof Uint8Array)) {
-          throw new Error("Expected partition bytes");
-        }
-        const partition = decodeUsageCostPartition(row.value_json, row.blob);
-        return Object.values(partition!.buckets).reduce(
-          (sum, bucket) => sum + bucket.totals.totalTokens,
-          0,
+    const agentId = "usage-cache-payload-budget";
+    const sessions = await Promise.all(
+      ["large", "small"].map(async (sessionId) => {
+        const sessionFile = state.path(`agents/${agentId}/sessions/${sessionId}.jsonl`);
+        await fs.mkdir(path.dirname(sessionFile), { recursive: true });
+        await fs.writeFile(
+          sessionFile,
+          transcriptText(sessionId, {
+            type: "message",
+            timestamp: "2026-09-18T00:00:00Z",
+            message: { role: "assistant", usage: { input: 7, output: 0, totalTokens: 7 } },
+          }),
         );
+        return { sessionId, sessionFile };
       }),
-    ).toEqual([30, 10]);
-    for (const [startMs, endMs, totalTokens] of [
-      [Date.UTC(2026, 8, 19), Date.UTC(2026, 8, 20) - 1, 10],
-      [Date.UTC(2026, 8, 20), Date.UTC(2026, 9, 2) - 1, 20],
-    ]) {
-      expect(
-        await loadSessionCostSummariesFromCache({
-          config,
+    );
+    await refreshCostUsageCacheForAgent({
+      config: {},
+      agentId,
+      sessionFiles: sessions.map((session) => session.sessionFile),
+    });
+    const row = requireValue(
+      readSessionCostUsageRollupRows(agentId).find(
+        (candidate) => candidate.key === sessions[0]!.sessionFile,
+      ),
+      "expected large-session checkpoint",
+    );
+    const pricingFingerprint = JSON.parse(row.valueJson).pricingFingerprint as string;
+    const original = requireValue(
+      readSessionCostUsageRollupEntry(row, agentId),
+      "expected valid checkpoint",
+    );
+    const probe = await observeUsageWorkerReads(
+      state.stateDir,
+      sessions.map((session) => session.sessionFile),
+    );
+    for (const variant of ["stored body", "compressed body", "compressed partition"] as const) {
+      const entry = structuredClone(original);
+      const tools = [
+        {
+          name:
+            "synthetic-tool-" +
+            "x".repeat(variant === "stored body" ? 2 * 1024 * 1024 : 35 * 1024 * 1024),
+          count: 1,
+        },
+      ];
+      if (variant === "compressed partition") {
+        entry.rollup.buckets[String(Date.UTC(2026, 8, 18))] = {
+          ...entry.rollup.untimestamped,
+          tools,
+          timestampMs: Date.UTC(2026, 8, 18),
+          latency: { centroids: [], count: 0, max: 0, sum: 0 },
+        };
+      } else {
+        entry.rollup.untimestamped.tools = tools;
+      }
+      const encoded =
+        variant === "compressed partition"
+          ? partitionUsageCostRollup(entry)
+          : { ...encodeUsageCostRollup(entry), partitions: [] };
+      if (variant === "stored body") {
+        encoded.blob = Uint8Array.from(Buffer.from(JSON.stringify(entry.rollup)));
+        const envelope = JSON.parse(encoded.valueJson);
+        envelope.body.encoding = "identity";
+        envelope.body.storedBytes = encoded.blob.byteLength;
+        encoded.valueJson = JSON.stringify(envelope);
+      }
+      const lock = prepareSessionCostUsageRefreshLock(agentId);
+      try {
+        expect(await lock.acquire()).toBe(true);
+        expect(
+          await lock.writeRollup({
+            rollupId: row.key,
+            valueJson: new TextEncoder().encode(encoded.valueJson),
+            blob: encoded.blob,
+            partitions: encoded.partitions,
+            replacePartitions: true,
+            updatedAt: row.updatedAt,
+          }),
+        ).toBe(true);
+      } finally {
+        await lock.release();
+      }
+      await probe.clear();
+      await probe.run(async () => {
+        const prepared = prepareUsageCostWorker({
           agentId,
-          sessions: [{ sessionFile }],
-          requestRefresh: false,
-          startMs,
-          endMs,
+          sessionFiles: sessions.map((session) => session.sessionFile),
+        });
+        const result = await runUsageCostWorker(prepared, {
+          kind: "sessions",
+          sessions,
+          pricingFingerprint,
           dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
-        }),
-      ).toMatchObject({ summaries: [{ totalTokens }], cacheStatus: { status: "fresh" } });
+        });
+        expect(result, variant).toMatchObject({
+          kind: "sessions",
+          summaries: [null, { totalTokens: 7 }],
+          cacheStatus: { status: "partial", cachedFiles: 1, pendingFiles: 1, staleFiles: 0 },
+          staleSessionFiles: [],
+          invalidRows: [],
+        });
+        const reads = await probe.read();
+        expect(reads.filter((read) => read.kind === "transcript")).toEqual([]);
+        expect(
+          reads
+            .filter((read) => read.kind === "decompress")
+            .every((read) => read.outputLimit < 35 * 1024 * 1024),
+          "large compressed JSON must be deferred before decompression",
+        ).toBe(true);
+        if (variant === "stored body") {
+          expect(
+            reads
+              .filter((read) => read.kind === "cache-row" && read.key === row.key)
+              .every((read) => read.blobBytes === 0),
+            "oversized stored bodies must remain inside SQLite",
+          ).toBe(true);
+        }
+      });
     }
   });
 });

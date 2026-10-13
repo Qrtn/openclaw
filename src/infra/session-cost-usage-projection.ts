@@ -34,6 +34,8 @@ export type UsageCostRollupRowSource = {
   readEntry?: (row: SessionCostUsageRollupRow) => Promise<UsageCostRollupEntry | null | undefined>;
   /** Snapshot rows whose keys are absent from the resolved files. */
   remainingRows: Iterable<SessionCostUsageRollupRow>;
+  /** Cache payloads omitted before materialization because of the report allowance. */
+  deferredPaths?: ReadonlySet<string>;
 };
 
 export const createUsageDayKeyFormatter = (dayBucket?: UsageDailyBucket): UsageDayKeyFormatter => {
@@ -154,8 +156,9 @@ function createRollupProjectionReader(
             canUseUsageCostRollupForPartial({ checkpoint: envelope.checkpoint, file }),
           )
         : [];
-      const entry =
-        row && usable.length > 0
+      const entry = params.deferredPaths?.has(filePath)
+        ? null
+        : row && usable.length > 0
           ? params.readEntry
             ? await params.readEntry(row)
             : decodeUsageCostRollup(
@@ -168,7 +171,7 @@ function createRollupProjectionReader(
       if (invalidBody && row) {
         params.onInvalidBody(row.key);
       }
-      return { fresh, entry, requests: usable, invalidBody };
+      return { fresh, checkpoint: envelope?.checkpoint, entry, requests: usable, invalidBody };
     },
     refreshedAt() {
       for (const row of params.remainingRows) {
@@ -193,11 +196,14 @@ export async function projectCostUsageSummary(
   const formatDay = createUsageDayKeyFormatter(params.dayBucket);
   let cachedFiles = 0;
   let staleFiles = 0;
+  let deferredFiles = 0;
   const reader = createRollupProjectionReader(params);
   // Keep file order and per-bucket additions: folding per-file totals changes rounding.
   for (const file of params.files) {
     const { fresh, entry, invalidBody } = await reader.read(file.filePath, [{ file }], file);
-    if (!fresh || invalidBody || !entry) {
+    if (entry === null && fresh) {
+      deferredFiles += 1;
+    } else if (!fresh || invalidBody || !entry) {
       staleFiles += 1;
     }
     if (!entry) {
@@ -223,9 +229,14 @@ export async function projectCostUsageSummary(
     ),
     totals,
     cacheStatus: {
-      status: staleFiles === 0 ? "fresh" : cachedFiles > 0 ? "partial" : "stale",
+      status:
+        staleFiles === 0 && deferredFiles === 0
+          ? "fresh"
+          : cachedFiles > 0 || deferredFiles > 0
+            ? "partial"
+            : "stale",
       cachedFiles,
-      pendingFiles: staleFiles,
+      pendingFiles: staleFiles + deferredFiles,
       staleFiles,
       refreshedAt,
     },
@@ -272,9 +283,17 @@ export async function projectSessionCostSummaries(
     (params.startMs === undefined && params.endMs === undefined);
   const formatDay = createUsageDayKeyFormatter(params.dayBucket);
   let cachedFiles = 0;
+  const deferredIndexes = new Set<number>();
   const reader = createRollupProjectionReader(params);
   for (const [filePath, requests] of requestsByPath) {
-    const { entry, requests: usableRequests } = await reader.read(filePath, requests);
+    const { entry, checkpoint, requests: usableRequests } = await reader.read(filePath, requests);
+    if (entry === null) {
+      for (const { index, file } of requests) {
+        if (isUsageCostRollupFresh({ checkpoint, file })) {
+          deferredIndexes.add(index);
+        }
+      }
+    }
     if (!entry) {
       continue;
     }
@@ -298,16 +317,24 @@ export async function projectSessionCostSummaries(
   }
   const staleSessionFiles = new Set<string>();
   for (const [index, session] of params.sessions.entries()) {
-    if (summaries[index] === null || summaries[index]?.staleSince !== undefined) {
+    if (
+      !deferredIndexes.has(index) &&
+      (summaries[index] === null || summaries[index]?.staleSince !== undefined)
+    ) {
       staleSessionFiles.add(params.files[index]?.sourcePath ?? session.sessionFile);
     }
   }
   return {
     summaries,
     cacheStatus: {
-      status: staleSessionFiles.size === 0 ? "fresh" : cachedFiles > 0 ? "partial" : "stale",
+      status:
+        staleSessionFiles.size === 0 && deferredIndexes.size === 0
+          ? "fresh"
+          : cachedFiles > 0 || deferredIndexes.size > 0
+            ? "partial"
+            : "stale",
       cachedFiles,
-      pendingFiles: staleSessionFiles.size,
+      pendingFiles: staleSessionFiles.size + deferredIndexes.size,
       staleFiles: staleSessionFiles.size,
       refreshedAt: reader.refreshedAt(),
     },

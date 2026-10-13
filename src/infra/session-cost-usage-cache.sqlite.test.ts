@@ -17,6 +17,8 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
 import { migrateSessionCostUsageRollupStorage } from "./session-cost-usage-cache-migration.js";
 import { writeSessionCostUsageRollupInDatabase } from "./session-cost-usage-cache.kernel.js";
 import {
@@ -24,7 +26,10 @@ import {
   isSessionCostUsageRefreshRunning,
   prepareSessionCostUsageRefreshLock,
 } from "./session-cost-usage-cache.sqlite.js";
-import { readSessionCostUsageRollupRows } from "./session-cost-usage-cache.test-support.js";
+import {
+  readSessionCostUsageRollupRows,
+  readSessionCostUsageRollupEntry,
+} from "./session-cost-usage-cache.test-support.js";
 import {
   partitionUsageCostRollup,
   decodeUsageCostPartition,
@@ -39,6 +44,8 @@ import {
   appendSessionUsageRollupContribution,
   createSessionUsageRollupData,
 } from "./session-cost-usage-rollup.js";
+import { prepareUsageCostWorker, runUsageCostWorker } from "./session-cost-usage-worker-runtime.js";
+import { loadSessionCostSummariesFromCache } from "./session-cost-usage.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -731,5 +738,144 @@ describe("session cost usage SQLite cache", () => {
         { key: "current.jsonl", scope: "session-cost-usage-rollup-v3" },
       ]);
     });
+  });
+});
+
+it.each(["stored", "decoded"] as const)(
+  "refreshes genuinely stale %s budget-deferred checkpoints",
+  async (mode) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const config = {};
+      const agentId = "usage-deferred-freshness";
+      const sessionFile = state.path("deferred-freshness.jsonl");
+      const record =
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-18T00:00:00Z",
+          message: { role: "assistant", usage: { input: 7, output: 0, totalTokens: 7 } },
+        }) + "\n";
+      await fs.promises.writeFile(sessionFile, record);
+      await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
+      const row = readSessionCostUsageRollupRows(agentId)[0];
+      if (!row) {
+        throw new Error("Expected stored checkpoint");
+      }
+      const entry = readSessionCostUsageRollupEntry(row, agentId);
+      if (!entry) {
+        throw new Error("Expected valid checkpoint body");
+      }
+      entry.rollup.untimestamped.tools = [
+        { name: "synthetic-" + "x".repeat((mode === "stored" ? 2 : 35) * 1024 * 1024), count: 1 },
+      ];
+      const encoded = encodeUsageCostRollup(entry);
+      if (mode === "stored") {
+        encoded.blob = Uint8Array.from(Buffer.from(JSON.stringify(entry.rollup)));
+        const envelope = JSON.parse(encoded.valueJson);
+        envelope.body.encoding = "identity";
+        envelope.body.storedBytes = encoded.blob.byteLength;
+        encoded.valueJson = JSON.stringify(envelope);
+      }
+      const lock = prepareSessionCostUsageRefreshLock(agentId);
+      try {
+        expect(await lock.acquire()).toBe(true);
+        expect(
+          await lock.writeRollup({
+            rollupId: row.key,
+            valueJson: new TextEncoder().encode(encoded.valueJson),
+            blob: encoded.blob,
+            updatedAt: row.updatedAt,
+          }),
+        ).toBe(true);
+      } finally {
+        await lock.release();
+      }
+      const prepared = prepareUsageCostWorker({ config, agentId, sessionFiles: [sessionFile] });
+      for (const stale of [false, true]) {
+        if (stale) {
+          await fs.promises.appendFile(sessionFile, record);
+        }
+        const result = await runUsageCostWorker(prepared, {
+          kind: "sessions",
+          sessions: [{ sessionFile }],
+          pricingFingerprint: entry.pricingFingerprint,
+          dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
+        });
+        expect(result).toMatchObject({
+          kind: "sessions",
+          summaries: [null],
+          staleSessionFiles: stale ? [sessionFile] : [],
+          invalidRows: [],
+          cacheStatus: { pendingFiles: 1, staleFiles: stale ? 1 : 0 },
+        });
+      }
+    });
+  },
+);
+
+it("replaces every monthly partition after cache damage and filters within and across months", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const config = {};
+    const agentId = "usage-missing-partition";
+    const sessionFile = state.path("usage-missing-partition.jsonl");
+    const record = (day: number) =>
+      JSON.stringify({
+        type: "message",
+        timestamp: new Date(Date.UTC(2026, 8, day)).toISOString(),
+        message: {
+          role: "assistant",
+          model: "fixture",
+          provider: "test",
+          usage: { input: 10, output: 0, totalTokens: 10, cost: { total: 1 } },
+        },
+      }) + "\n";
+    await fs.promises.writeFile(sessionFile, record(18) + record(19) + record(31));
+    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
+    runOpenClawAgentWriteTransaction(
+      ({ db }) =>
+        db
+          .prepare(
+            "DELETE FROM cache_entries WHERE (scope, key) IN (SELECT scope, key FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1)",
+          )
+          .run(USAGE_COST_PARTITION_SCOPE),
+      { agentId },
+    );
+    await fs.promises.appendFile(sessionFile, record(20));
+    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
+    const stored = runOpenClawAgentWriteTransaction(
+      ({ db }) =>
+        db
+          .prepare("SELECT key, value_json, blob FROM cache_entries WHERE scope = ? ORDER BY key")
+          .all(USAGE_COST_PARTITION_SCOPE),
+      { agentId },
+    );
+    expect(stored.map((row) => String(row.key).slice(-10))).toEqual(["2026-09-01", "2026-10-01"]);
+    expect(
+      stored.map((row) => {
+        if (typeof row.value_json !== "string" || !(row.blob instanceof Uint8Array)) {
+          throw new Error("Expected partition bytes");
+        }
+        const partition = decodeUsageCostPartition(row.value_json, row.blob);
+        return Object.values(partition!.buckets).reduce(
+          (sum, bucket) => sum + bucket.totals.totalTokens,
+          0,
+        );
+      }),
+    ).toEqual([30, 10]);
+    for (const [startMs, endMs, totalTokens] of [
+      [Date.UTC(2026, 8, 19), Date.UTC(2026, 8, 20) - 1, 10],
+      [Date.UTC(2026, 8, 20), Date.UTC(2026, 9, 2) - 1, 20],
+    ]) {
+      expect(
+        await loadSessionCostSummariesFromCache({
+          config,
+          agentId,
+          sessions: [{ sessionFile }],
+          requestRefresh: false,
+          startMs,
+          endMs,
+          dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
+        }),
+      ).toMatchObject({ summaries: [{ totalTokens }], cacheStatus: { status: "fresh" } });
+    }
   });
 });

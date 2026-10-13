@@ -3,7 +3,11 @@ import { isMainThread } from "node:worker_threads";
 import { expressionBuilder } from "kysely";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import { chunkItems } from "../utils/chunk-items.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+} from "./kysely-sync.js";
 import {
   USAGE_COST_PARTITION_SCOPE,
   usageCostPartitionKey,
@@ -83,6 +87,7 @@ export function readSessionCostUsagePartitionsInDatabase(
   startMs = Number.NEGATIVE_INFINITY,
   endMs = Number.POSITIVE_INFINITY,
   throwIfCancelled?: () => void,
+  budget?: { remainingBytes: number; deferredPaths: Set<string> },
 ): Map<string, UsageCostPartition[]> {
   assertUsagePartitionWorker();
   const start = Number.isFinite(startMs) ? `${new Date(startMs).toISOString().slice(0, 7)}-01` : "";
@@ -91,30 +96,68 @@ export function readSessionCostUsagePartitionsInDatabase(
   const kysely = getNodeSqliteKysely<CacheDatabase>(db);
   for (const paths of chunkItems([...new Set(filePaths)], 100)) {
     throwIfCancelled?.();
-    const rows = executeSqliteQuerySync(
-      db,
-      kysely
-        .selectFrom("cache_entries")
-        .select(["key", "value_json", "blob"])
-        .where((eb) =>
-          eb.or(
-            paths.map((filePath) =>
-              eb.and([
-                eb("scope", "=", USAGE_COST_PARTITION_SCOPE),
-                eb("key", ">=", usageCostPartitionKey(filePath, start)),
-                eb("key", "<=", usageCostPartitionKey(filePath, end)),
-              ]),
-            ),
+    const query = kysely
+      .selectFrom("cache_entries")
+      .select("key")
+      .select((eb) => [
+        (budget
+          ? eb
+              .case()
+              .when(eb.fn<number>("length", [eb.cast("value_json", "blob")]), "<=", 64 * 1024)
+              .then(eb.ref("value_json"))
+              .else(null)
+              .end()
+          : eb.ref("value_json")
+        ).as("value_json"),
+        (budget
+          ? eb
+              .case()
+              .when(
+                eb.fn<number>("length", ["blob"]),
+                "<=",
+                Math.min(1024 * 1024, budget.remainingBytes),
+              )
+              .then(eb.ref("blob"))
+              .else(null)
+              .end()
+          : eb.ref("blob")
+        ).as("blob"),
+        eb.fn<number>("length", [eb.cast("value_json", "blob")]).as("header_bytes"),
+        eb.fn<number>("length", ["blob"]).as("body_bytes"),
+      ])
+      .where((eb) =>
+        eb.or(
+          paths.map((filePath) =>
+            eb.and([
+              eb("scope", "=", USAGE_COST_PARTITION_SCOPE),
+              eb("key", ">=", usageCostPartitionKey(filePath, start)),
+              eb("key", "<=", usageCostPartitionKey(filePath, end)),
+            ]),
           ),
-        )
-        .orderBy("key", "asc"),
-    ).rows;
-    for (const row of rows) {
-      if (row.value_json === null || row.blob === null) {
-        continue;
-      }
+        ),
+      )
+      .orderBy("key", "asc");
+    for (const row of iterateSqliteQuerySync(db, query)) {
+      throwIfCancelled?.();
       const separator = row.key.lastIndexOf("\0");
       const filePath = row.key.slice(0, separator);
+      const bytes = 2 * (row.value_json?.length ?? 0) + (row.blob?.byteLength ?? 0);
+      if (
+        budget &&
+        (row.header_bytes > 64 * 1024 ||
+          (row.body_bytes > 0 && row.blob === null) ||
+          bytes > budget.remainingBytes)
+      ) {
+        budget.deferredPaths.add(filePath);
+        byPath.delete(filePath);
+        continue;
+      }
+      if (row.value_json === null || row.blob === null || budget?.deferredPaths.has(filePath)) {
+        continue;
+      }
+      if (budget) {
+        budget.remainingBytes -= bytes;
+      }
       const partitions = byPath.get(filePath) ?? [];
       partitions.push({
         date: row.key.slice(separator + 1),

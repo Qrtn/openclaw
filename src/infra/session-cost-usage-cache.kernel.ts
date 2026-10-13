@@ -2,7 +2,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { expressionBuilder } from "kysely";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import { chunkItems } from "../utils/chunk-items.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+} from "./kysely-sync.js";
 import type { UsageCostPartition } from "./session-cost-usage-partitions.js";
 import {
   pruneSessionCostUsagePartitionsInDatabase,
@@ -37,48 +41,95 @@ function cacheJsonText(value: SessionCostUsageJson) {
     : cacheExpressions.cast<string>(cacheExpressions.val(value), "text");
 }
 
+type RollupReadOptions = {
+  includeBody?: boolean;
+  throwIfCancelled?: () => void;
+  budget?: { remainingBytes: number; deferredPaths: Set<string> };
+};
+
 export function readSessionCostUsageRollupRowsInDatabase(
   db: DatabaseSync,
   filePaths: readonly string[] | undefined,
-  options: { includeBody: true; throwIfCancelled?: () => void },
+  options: RollupReadOptions & { includeBody: true },
 ): Array<SessionCostUsageRollupRow & { blob: Uint8Array | null }>;
 export function readSessionCostUsageRollupRowsInDatabase(
   db: DatabaseSync,
   filePaths?: readonly string[],
-  options?: { includeBody?: false; throwIfCancelled?: () => void },
+  options?: RollupReadOptions & { includeBody?: false },
 ): SessionCostUsageRollupRow[];
 export function readSessionCostUsageRollupRowsInDatabase(
   db: DatabaseSync,
   filePaths?: readonly string[],
-  options?: { includeBody?: boolean; throwIfCancelled?: () => void },
+  options?: RollupReadOptions,
 ): Array<SessionCostUsageRollupRow & { blob?: Uint8Array | null }> {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
   // Bound SQL parameters even when a historical family contains many instances.
   const batches = filePaths ? chunkItems([...new Set(filePaths)], 500) : [undefined];
-  return batches
-    .flatMap((keys) => {
+  const result: Array<SessionCostUsageRollupRow & { blob?: Uint8Array | null }> = [];
+  for (const keys of batches) {
+    options?.throwIfCancelled?.();
+    const budget = options?.budget;
+    const query = kysely
+      .selectFrom("cache_entries")
+      .select(["key", "updated_at"])
+      .select((eb) => [
+        (budget
+          ? eb
+              .case()
+              .when(eb.fn<number>("length", [eb.cast("value_json", "blob")]), "<=", 64 * 1024)
+              .then(eb.ref("value_json"))
+              .else(null)
+              .end()
+          : eb.ref("value_json")
+        ).as("value_json"),
+        (options?.includeBody
+          ? budget
+            ? eb
+                .case()
+                .when(
+                  eb.fn<number>("length", ["blob"]),
+                  "<=",
+                  Math.min(1024 * 1024, budget.remainingBytes),
+                )
+                .then(eb.ref("blob"))
+                .else(null)
+                .end()
+            : eb.ref("blob")
+          : eb.val(null)
+        ).as("blob"),
+        eb.fn<number>("coalesce", [eb.fn<number>("length", ["blob"]), eb.val(0)]).as("body_bytes"),
+        eb.fn<number>("length", [eb.cast("value_json", "blob")]).as("header_bytes"),
+      ])
+      .where("scope", "=", ROLLUP_SCOPE);
+    for (const row of iterateSqliteQuerySync(db, keys ? query.where("key", "in", keys) : query)) {
       options?.throwIfCancelled?.();
-      const query = kysely
-        .selectFrom("cache_entries")
-        .select(["key", "value_json", "updated_at"])
-        .select((eb) => [
-          options?.includeBody ? eb.ref("blob").as("blob") : eb.val(null).as("blob"),
-        ])
-        .where("scope", "=", ROLLUP_SCOPE);
-      return executeSqliteQuerySync(db, keys ? query.where("key", "in", keys) : query).rows;
-    })
-    .flatMap((row) =>
-      row.value_json === null
-        ? []
-        : [
-            {
-              key: row.key,
-              valueJson: row.value_json,
-              updatedAt: row.updated_at,
-              ...(options?.includeBody ? { blob: row.blob } : {}),
-            },
-          ],
-    );
+      const headerBytes = 2 * (row.value_json?.length ?? 0);
+      const bytes = headerBytes + row.body_bytes;
+      const deferred =
+        budget &&
+        (row.header_bytes > 64 * 1024 ||
+          (row.body_bytes > 0 && row.blob === null) ||
+          bytes > budget.remainingBytes);
+      if (deferred) {
+        budget.deferredPaths.add(row.key);
+        if (row.value_json === null || headerBytes > budget.remainingBytes) {
+          continue;
+        }
+        budget.remainingBytes -= headerBytes;
+      } else if (budget) {
+        budget.remainingBytes -= bytes;
+      }
+      if (row.value_json !== null) {
+        result.push({
+          key: row.key,
+          valueJson: row.value_json,
+          updatedAt: row.updated_at,
+          ...(options?.includeBody ? { blob: deferred ? null : row.blob } : {}),
+        });
+      }
+    }
+  }
+  return result;
 }
 
 export function writeSessionCostUsageRollupInDatabase(

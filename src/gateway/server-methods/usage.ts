@@ -403,11 +403,6 @@ export const usageHandlers: GatewayRequestHandlers = {
             endMs,
             visibilityFilter,
           });
-          if (visibleEntries.reduce((count, entry) => count + entry.instances.length, 0) > 20_000) {
-            throw new UsageSessionInvalidRequestError(
-              "Usage includes more than 20,000 session instances; narrow the date range or select a session.",
-            );
-          }
           const profiles: Parameters<typeof projectSessionActor>[1] = new Map();
           const matchedEntries = visibleEntries.map((entry) => ({
             entry,
@@ -416,6 +411,11 @@ export const usageHandlers: GatewayRequestHandlers = {
           const mergedEntries = matchedEntries
             .filter(({ creator }) => !creatorKey || creator.key === creatorKey)
             .map(({ entry }) => entry);
+          if (mergedEntries.reduce((count, entry) => count + entry.instances.length, 0) > 20_000) {
+            throw new UsageSessionInvalidRequestError(
+              "Usage includes more than 20,000 session instances; narrow the date range or select a session.",
+            );
+          }
 
           // Context queries need the saved report for every candidate; ordinary reads hydrate the page.
           if (
@@ -493,136 +493,142 @@ export const usageHandlers: GatewayRequestHandlers = {
     const sourcesByKey = new Map(
       result.sources.map((entry) => [JSON.stringify([entry.agentId, entry.key]), entry]),
     );
-    const creatorRows = result.sessions.filter(
-      (row) => !creatorKey || row.creatorKey === creatorKey,
-    );
-    const pageRows = overviewOptions
-      ? selectUsageOverviewPage({
-          rows: creatorRows,
-          options: overviewOptions,
-          dayBucket: resolveUsageCostWorkerDayBucket(dayBucket),
-        })
-      : creatorRows.slice(0, limit);
-    const pageSources = pageRows.flatMap(
-      (row) => sourcesByKey.get(JSON.stringify([row.agentId, row.key])) ?? [],
-    );
-    await loadUsageSessionContext(pageSources, visibilityFilter);
-    const pageContext = new Map(
-      pageSources.map((entry) => [JSON.stringify([entry.agentId, entry.key]), entry.contextWeight]),
-    );
-    result = {
-      ...result,
-      sessions: result.sessions.map((row) => {
-        const report = pageContext.get(JSON.stringify([row.agentId, row.key]));
-        return report
-          ? {
-              ...row,
-              hasContextWeight: true,
-              contextWeight: includeContextWeight ? report : undefined,
-            }
-          : row;
-      }),
-    };
     const contextReads = new Map<
-      SessionUsageEntry,
-      Awaited<ReturnType<typeof prepareSessionMutationFacts>>
+      UsageSessionSelection,
+      Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined
     >();
-    try {
-      const projection = getSessionRowProjection(context);
-      const accessChanged =
-        result.sessionRevision !== readSessionRowChangeRevision() ||
-        result.accessRevision !== readGatewayAccessRevision() ||
-        config !== context.getRuntimeConfig();
-      // Cached reports are data, not authority. Retain current sharing through response publication.
-      for (const session of result.sessions) {
-        if ((!session.hasContextWeight && (!accessChanged || projection)) || !session.agentId) {
-          continue;
-        }
-        try {
-          contextReads.set(
-            session,
-            await prepareSessionMutationFacts({
-              cfg: context.getRuntimeConfig(),
-              sessionKey: session.key,
-              agentId: session.agentId,
-            }),
-          );
-        } catch (error) {
-          if (!(error instanceof SessionMutationFactsUnavailableError)) {
-            throw error;
-          }
-        }
-      }
-      const profiles = await prepareSessionSharingProfiles(client ?? null);
-      const currentConfig = context.getRuntimeConfig();
-      const { entryFilter: currentFilter, sessionCap: currentSessionCap } =
-        prepareProjectedSessionSharing({
-          cfg: currentConfig,
-          client: client ?? null,
-          profiles,
-          isMember: () => false,
-        });
-      const visible = result.sessions.flatMap((session): SessionUsageEntry[] => {
-        const source = sourcesByKey.get(JSON.stringify([session.agentId, session.key]));
-        const committed =
-          source?.contextTarget &&
-          projection?.readCapabilityEntry({
+    const hydratedSources = new Set<UsageSessionSelection>();
+    const sourceFor = (session: SessionUsageEntry) =>
+      sourcesByKey.get(JSON.stringify([session.agentId, session.key]));
+    const committedEntry = (source: UsageSessionSelection) =>
+      source.contextTarget && !source.storeEntry?.incognito
+        ? getSessionRowProjection(context)?.readCapabilityEntry({
             agentId: source.agentId,
             storePath: source.contextTarget.storeTarget.storePath,
             key: source.key,
-          });
-        let current = committed?.entry;
-        if (
-          committed === undefined &&
-          result.sessionRevision === readSessionRowChangeRevision() &&
-          result.accessRevision === readGatewayAccessRevision() &&
-          config === currentConfig
-        ) {
-          current = source?.storeEntry;
-        }
-        if (contextReads.has(session)) {
+          })
+        : undefined;
+    const snapshotIsCurrent = () =>
+      result.sessionRevision === readSessionRowChangeRevision() &&
+      result.accessRevision === readGatewayAccessRevision() &&
+      config === context.getRuntimeConfig();
+    try {
+      const profiles = await prepareSessionSharingProfiles(client ?? null);
+      const prepareUnavailableSources = async () => {
+        for (const session of result.sessions) {
+          const source = sourceFor(session);
+          if (
+            !source ||
+            !session.agentId ||
+            contextReads.has(source) ||
+            committedEntry(source) !== undefined ||
+            (!session.hasContextWeight && snapshotIsCurrent())
+          ) {
+            continue;
+          }
+          contextReads.set(source, undefined);
           try {
-            current = contextReads.get(session)?.readCurrent(currentConfig).target?.entry;
+            contextReads.set(
+              source,
+              await prepareSessionMutationFacts({
+                cfg: context.getRuntimeConfig(),
+                sessionKey: session.key,
+                agentId: session.agentId,
+              }),
+            );
           } catch (error) {
             if (!(error instanceof SessionMutationFactsUnavailableError)) {
               throw error;
             }
-            current = undefined;
           }
         }
-        // Orphan history is visible only to callers whose current role permits aggregate usage.
-        if (
-          source?.storeEntry
-            ? !current || (currentFilter && !currentFilter(session.key, current))
-            : currentSessionCap === "none"
-        ) {
-          return [];
-        }
-        if (!session.hasContextWeight) {
-          return [session];
-        }
-        try {
-          const contextEntry = contextReads.get(session)?.readCurrent(currentConfig).target?.entry;
+      };
+      const readVisibleRows = () => {
+        const currentConfig = context.getRuntimeConfig();
+        const { entryFilter: currentFilter, sessionCap: currentSessionCap } =
+          prepareProjectedSessionSharing({
+            cfg: currentConfig,
+            client: client ?? null,
+            profiles,
+            isMember: () => false,
+          });
+        return result.sessions.flatMap((session): SessionUsageEntry[] => {
+          const source = sourceFor(session);
+          const committed = source && committedEntry(source);
+          let current = committed?.entry;
+          if (committed === undefined && source) {
+            const prepared = contextReads.get(source);
+            if (prepared) {
+              try {
+                current = prepared.readCurrent(currentConfig).target?.entry;
+              } catch (error) {
+                if (!(error instanceof SessionMutationFactsUnavailableError)) {
+                  throw error;
+                }
+              }
+            } else if (!contextReads.has(source) && snapshotIsCurrent()) {
+              current = source.storeEntry;
+            }
+          }
+          // Cached reports are data; current receipt metadata owns publication authority.
           if (
-            contextEntry &&
-            contextEntry.sessionId === session.sessionId &&
-            (!currentFilter || currentFilter(session.key, contextEntry))
+            source?.storeEntry
+              ? !current || (currentFilter && !currentFilter(session.key, current))
+              : currentSessionCap === "none"
           ) {
-            return [session];
+            return [];
           }
-        } catch (error) {
-          if (!(error instanceof SessionMutationFactsUnavailableError)) {
-            throw error;
-          }
+          return session.hasContextWeight && current?.sessionId !== session.sessionId
+            ? [
+                {
+                  ...session,
+                  hasContextWeight: false,
+                  contextWeight: includeContextWeight ? null : undefined,
+                },
+              ]
+            : [session];
+        });
+      };
+      const selectPage = (rows: SessionUsageEntry[]) => {
+        const selected = rows.filter((row) => !creatorKey || row.creatorKey === creatorKey);
+        return overviewOptions
+          ? selectUsageOverviewPage({
+              rows: selected,
+              options: overviewOptions,
+              dayBucket: resolveUsageCostWorkerDayBucket(dayBucket),
+            })
+          : selected.slice(0, limit);
+      };
+      // Refill once after an access change. Continued churn may shorten the page, never extend the scan.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await prepareUnavailableSources();
+        const pageSources = selectPage(readVisibleRows()).flatMap((row) => {
+          const source = sourceFor(row);
+          return source && !hydratedSources.has(source) ? [source] : [];
+        });
+        if (pageSources.length === 0) {
+          break;
         }
-        return [
-          {
-            ...session,
-            hasContextWeight: false,
-            contextWeight: includeContextWeight ? null : undefined,
-          },
-        ];
-      });
+        await loadUsageSessionContext(pageSources, visibilityFilter);
+        for (const source of pageSources) {
+          hydratedSources.add(source);
+        }
+        result = {
+          ...result,
+          sessions: result.sessions.map((row) => {
+            const source = sourceFor(row);
+            return source && hydratedSources.has(source)
+              ? {
+                  ...row,
+                  hasContextWeight: Boolean(source.contextWeight),
+                  contextWeight: includeContextWeight ? (source.contextWeight ?? null) : undefined,
+                }
+              : row;
+          }),
+        };
+      }
+      await prepareUnavailableSources();
+      const visible = readVisibleRows();
       const creatorOptions = new Map<string, SessionUsageCreator>();
       for (const row of visible) {
         if (row.creatorKey) {
@@ -653,6 +659,10 @@ export const usageHandlers: GatewayRequestHandlers = {
         true,
         {
           ...slice,
+          sessions: slice.sessions.filter((row) => {
+            const source = sourceFor(row);
+            return source && hydratedSources.has(source);
+          }),
           updatedAt: result.updatedAt,
           startDate: formatDateLabel(startMs, dateInterpretation),
           endDate: formatDateLabel(endMs, dateInterpretation),
@@ -663,7 +673,7 @@ export const usageHandlers: GatewayRequestHandlers = {
       );
     } finally {
       for (const read of contextReads.values()) {
-        read.release();
+        read?.release();
       }
     }
   }),

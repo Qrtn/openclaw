@@ -27,6 +27,7 @@ it.for([
   "incognito transition",
   "revocation during target read",
   "revocation after context read",
+  "page backfill after revocation",
 ] as const)(
   "does not expose revoked usage context after %s",
   async (change, { signal, onTestFinished }) => {
@@ -119,6 +120,7 @@ it.for([
         tools: { listChars: 0, schemaChars: 0, entries: [] },
       };
       const changedReport = { ...originalReport, generatedAt: timestamp + 1 };
+      const siblingReport = { ...originalReport, generatedAt: timestamp + 2 };
       replaceSessionEntrySync(scope, {
         sessionId,
         updatedAt: timestamp,
@@ -136,6 +138,9 @@ it.for([
         updatedAt: timestamp - 1,
         createdActor: { type: "human", source: "profile", id: viewer.id },
         visibility: "shared",
+        ...(change === "page backfill after revocation"
+          ? { systemPromptReport: siblingReport }
+          : {}),
       });
       for (const [target, tokens] of [
         [{ ...scope, sessionId }, 17],
@@ -172,13 +177,19 @@ it.for([
         .mockImplementation(async (params) => {
           const result = await actualLoad(params);
           summaryLoaded.resolve(result);
-          if (change !== "revocation after context read") {
+          if (
+            change !== "revocation after context read" &&
+            change !== "page backfill after revocation"
+          ) {
             await release.promise;
           }
           return result;
         });
       restoreSummaryLoader = () => summaryLoader.mockRestore();
-      if (change === "revocation after context read") {
+      if (
+        change === "revocation after context read" ||
+        change === "page backfill after revocation"
+      ) {
         const actualRead = usageSessionSelection.loadUsageSessionContext;
         const reader = vi
           .spyOn(usageSessionSelection, "loadUsageSessionContext")
@@ -210,7 +221,7 @@ it.for([
           params: {
             agentId: "main",
             range: "all",
-            limit: 2,
+            limit: change === "page backfill after revocation" ? 1 : 2,
             includeContextWeight: true,
             ...(change === "revocation during target read" ? { key: scope.sessionKey } : {}),
           },
@@ -221,7 +232,9 @@ it.for([
         }),
       );
       const loaded = await Promise.race([
-        change === "revocation during target read" || change === "revocation after context read"
+        change === "revocation during target read" ||
+        change === "revocation after context read" ||
+        change === "page backfill after revocation"
           ? targetReadStarted.promise
           : summaryLoaded.promise,
         request.then(() => {
@@ -299,6 +312,11 @@ it.for([
           hasContextWeight: false,
           contextWeight: null,
         });
+      }
+      if (change === "page backfill after revocation") {
+        expect(result.sessions).toMatchObject([
+          { key: sibling.sessionKey, hasContextWeight: true, contextWeight: siblingReport },
+        ]);
       }
     } finally {
       await cleanup();
