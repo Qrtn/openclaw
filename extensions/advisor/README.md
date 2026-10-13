@@ -9,6 +9,11 @@ aim to fix the cause and resume useful work, not just stop at a recoverable
 blocker. If the run cannot accept steering, the correction becomes hidden context
 on the next turn and expires after 24 hours.
 
+Review replies must start with `NO_CHANGE` or `CORRECTION` on its own line.
+`NO_CHANGE` never steers, even if followed by commentary. Only the body after
+`CORRECTION` is delivered, limited to 120 words and a 2,000-character reply.
+Malformed or oversized replies are ignored with one bounded warning.
+
 Enable it in **Settings → Agents & Tools → Labs → Advisor**. Its **Configure**
 button opens the plugin's settings page. Or use config:
 

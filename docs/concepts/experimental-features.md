@@ -282,6 +282,10 @@ Behavior and limits:
 - Each conversation has at most one review in flight. A failed review is logged
   and the next review waits a full interval. Session reset, plugin disable, and
   service stop cancel pending reviews.
+- Review replies use a first-line `NO_CHANGE` or `CORRECTION` decision.
+  `NO_CHANGE` never steers, even with commentary. Only the correction body is
+  delivered. Malformed replies, duplicate decision lines, or replies exceeding
+  120 correction words or 2,000 total characters are ignored with one warning.
 - A correction first attempts active-run steering. If steering is unavailable,
   it is queued for the next turn and expires after 24 hours. It is labeled as
   advice that the agent must check before acting.

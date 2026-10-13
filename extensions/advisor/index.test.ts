@@ -92,7 +92,7 @@ function setup(pluginConfig: Record<string, unknown>) {
       finished.notify();
     }
   });
-  const warn = vi.fn(() => finished.notify());
+  const warn = vi.fn<OpenClawPluginApi["logger"]["warn"]>(() => finished.notify());
   const api = createTestPluginApi({
     id: "advisor",
     pluginConfig,
@@ -257,13 +257,16 @@ describe("advisor", () => {
       await run.toolStarted();
       expect(run.forkSession).toHaveBeenCalledOnce();
       const done = run.finished();
-      review.resolve("Stop editing CI; the user asked only for the README typo.");
+      review.resolve("CORRECTION\nStop editing CI; the user asked only for the README typo.");
       await done;
       expect(run.steer).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           sessionKey: "agent:main:main",
           text: expect.stringContaining("Stop editing CI"),
         }),
+      );
+      expect(run.steer.mock.calls[0]?.[0].text.split("\n\n").at(-1)).toBe(
+        "Stop editing CI; the user asked only for the README typo.",
       );
       if (active) {
         expect(run.enqueue).not.toHaveBeenCalled();
@@ -306,6 +309,52 @@ describe("advisor", () => {
     expect(run.enqueue).not.toHaveBeenCalled();
     await run.stopService();
   });
+
+  it.each(["NO_CHANGE", "NO_CHANGE\nThe agent should continue its current plan."])(
+    "does not steer for a no-change header: %s",
+    async (output) => {
+      const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+      await run.startService();
+      await run.startRun();
+      await run.toolStarted();
+      const review = await run.dispatchReview();
+      const done = run.finished();
+      review.resolve(output);
+      await done;
+      expect(run.steer).not.toHaveBeenCalled();
+      expect(run.enqueue).not.toHaveBeenCalled();
+      expect(run.warn).not.toHaveBeenCalled();
+      await run.stopService();
+    },
+  );
+
+  it.each([
+    { output: "", reason: "no decision" },
+    { output: "Continue the current plan.\nNO_CHANGE", reason: "invalid decision header" },
+    { output: "Stop editing CI.", reason: "invalid decision header" },
+    { output: "CORRECTION", reason: "empty correction" },
+    { output: "NO_CHANGE\nCORRECTION\nStop editing CI.", reason: "multiple decision headers" },
+    { output: "CORRECTION\nStop editing CI.\nNO_CHANGE", reason: "multiple decision headers" },
+    { output: `CORRECTION\n${"word ".repeat(121)}`, reason: "correction word limit" },
+    { output: `CORRECTION\n${"x".repeat(2000)}`, reason: "finding length limit" },
+  ])(
+    "rejects malformed review output with one bounded warning: $reason",
+    async ({ output, reason }) => {
+      const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+      await run.startService();
+      await run.startRun();
+      await run.toolStarted();
+      const review = await run.dispatchReview();
+      const done = run.finished();
+      review.resolve(output);
+      await done;
+      expect(run.steer).not.toHaveBeenCalled();
+      expect(run.enqueue).not.toHaveBeenCalled();
+      expect(run.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(reason));
+      expect(run.warn.mock.calls[0]?.[0].length).toBeLessThan(200);
+      await run.stopService();
+    },
+  );
 
   it("ignores non-user runs and cancels on reset, disable, and service stop", async () => {
     const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
