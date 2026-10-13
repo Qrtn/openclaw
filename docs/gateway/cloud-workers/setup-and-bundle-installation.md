@@ -36,12 +36,15 @@ receive opaque sentinels. A job-scoped HTTPS proxy substitutes the value only fo
 the store entry's exact allowed hosts, including Bearer headers and Basic
 credentials. The upstream proxy credential and CA private key stay on the Gateway.
 Public HTTPS package downloads remain available through the bridge.
+Plain HTTP downloads, including Ubuntu's default apt mirrors, go directly from
+the lease and never receive substituted secrets. The runner unsets inherited
+`HTTP_PROXY` and `http_proxy` values so they cannot redirect that traffic.
 
 This requires an exclusively owned coordinator Linux lease and Crabbox 0.76.0 or
 newer with its matching egress runtime helper. Missing support, unavailable proxy,
 unbound store entries, and unmapped repository requests fail visibly before
 repository code runs. There is no plaintext fallback. No-secret jobs keep their
-existing runner. HTTP clients must honor the supplied proxy and CA variables;
+existing runner. HTTPS clients must honor the supplied proxy and CA variables;
 detached processes lose protected access when the lifecycle command finishes.
 
 The runner removes its temporary public CA bundle and revokes its grant on exit,

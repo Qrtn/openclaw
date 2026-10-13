@@ -30,6 +30,7 @@ import {
   inspectCases,
   mappedCatalog,
 } from "./crabbox-worker-provider.test-support.js";
+import { runCrabboxSetupEgress } from "./crabbox-worker-setup-egress.js";
 import {
   CRABBOX_COMMAND_SETTLEMENT_TIMEOUT_MS,
   CRABBOX_WARMUP_TIMEOUT_MS,
@@ -599,6 +600,33 @@ describe("Crabbox worker provider", () => {
       expect.any(Function),
     );
     expect(revokeSetupGrant).toHaveBeenCalledOnce();
+  });
+
+  it("leaves plain HTTP direct while protecting HTTPS setup requests", async () => {
+    const runCommand = vi.fn<CrabboxCommandRunner>(async () => commandResult());
+    const createScript = vi.fn<(env: Record<string, string>) => string>(
+      () => "curl http://packages.example.test/",
+    );
+    await runCrabboxSetupEgress({
+      binary: SIBLING_BINARY,
+      provider: "aws",
+      id: LEASE_ID,
+      secrets: SETUP_SECRETS,
+      createScript,
+      runCommand,
+      timeoutMs: 60_000,
+      assertCurrent: () => {},
+    });
+    const script = runCommand.mock.calls[0]?.[1].input;
+    expect(script).not.toMatch(/^export (?:HTTP_PROXY|http_proxy)=/mu);
+    expect(script).toContain("unset HTTP_PROXY http_proxy ALL_PROXY all_proxy");
+    expect(script).toContain("export HTTPS_PROXY='http://127.0.0.1:3128'");
+    expect(script).toContain("export https_proxy='http://127.0.0.1:3128'");
+    expect(script).toContain("export NO_PROXY='localhost,127.0.0.1,::1'");
+    expect(script).toContain("export no_proxy='localhost,127.0.0.1,::1'");
+    expect(script).toContain("export NODE_USE_ENV_PROXY='1'");
+    expect(createScript.mock.calls[0]?.[0]).not.toHaveProperty("HTTP_PROXY");
+    expect(createScript.mock.calls[0]?.[0]).not.toHaveProperty("http_proxy");
   });
 
   it("stops the owned lease without launching setup when its protected secret is unavailable", async () => {

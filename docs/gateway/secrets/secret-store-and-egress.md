@@ -189,6 +189,9 @@ substitutes each sentinel only at that secret's bound host. This job does not
 require `secrets.egressProxy.enabled`. Unsupported leases, unavailable helpers or
 proxy service, and old CLIs fail with repair guidance before repository code.
 No-secret jobs retain their existing transport.
+Protected setup exports only HTTPS proxy settings and unsets inherited
+`HTTP_PROXY` and `http_proxy` values. Plain HTTP downloads go directly from the
+lease and never receive substituted secrets.
 
 The job receives remote sentinel environment values and public CA bundle
 contents. Its authenticated upstream proxy environment belongs only on the

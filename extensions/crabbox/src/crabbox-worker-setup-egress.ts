@@ -112,9 +112,7 @@ export async function runCrabboxSetupEgress(
     const remoteEnv = {
       ...egress.remoteEnv,
       HTTPS_PROXY: "http://127.0.0.1:3128",
-      HTTP_PROXY: "http://127.0.0.1:3128",
       https_proxy: "http://127.0.0.1:3128",
-      http_proxy: "http://127.0.0.1:3128",
       NO_PROXY: "localhost,127.0.0.1,::1",
       no_proxy: "localhost,127.0.0.1,::1",
       NODE_USE_ENV_PROXY: "1",
@@ -133,7 +131,7 @@ trap 'rm -rf -- ${quote(directory)}' EXIT
 cat > ${quote(caFile)} <<'${delimiter}'
 ${egress.caBundle}
 ${delimiter}
-unset ALL_PROXY all_proxy
+unset HTTP_PROXY http_proxy ALL_PROXY all_proxy
 ${Object.entries(remoteEnv)
   .map(([name, value]) => `export ${name}=${quote(value)}`)
   .join("\n")}
