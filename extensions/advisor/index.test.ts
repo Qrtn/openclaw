@@ -250,7 +250,7 @@ describe("advisor", () => {
       expect(run.forkSession).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           sessionKey: "agent:main:main",
-          message: expect.stringContaining("Reply with exactly NO_CHANGE"),
+          message: expect.stringContaining("exactly NO_CHANGE"),
         }),
       );
       expect(run.forkSession.mock.calls[0]?.[0]).not.toHaveProperty("model");
