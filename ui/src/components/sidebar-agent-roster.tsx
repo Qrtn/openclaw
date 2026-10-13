@@ -1,5 +1,13 @@
-import type { WaSelectEvent } from "@awesome.me/webawesome/dist/events/select.js";
-import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  flush,
+  For,
+  onSettled,
+  Show,
+  untrack,
+} from "solid-js";
 import { isSessionRouteId } from "../app-route-paths.ts";
 import { loadSettings, patchSettings } from "../app/settings.ts";
 import { registerAgentsHomeEnglish } from "../i18n/locales/en-agents-home.ts";
@@ -30,6 +38,7 @@ import {
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { Icon } from "./solid/icon.tsx";
 import { AgentIdentityAvatar } from "./solid/identity-avatar.tsx";
+import { Menu } from "./solid/menu.tsx";
 import { renderNewSessionLink } from "./solid/new-session-link.tsx";
 import { renderTeamSessionSlots, sessionRunVisibility } from "./solid/session-presentation.tsx";
 import "../styles/sidebar-agent-roster.css";
@@ -316,17 +325,21 @@ function SidebarAgentRosterContent(
                         },
                         onOpen: (id, target) => roster.host().requestOpenNewSession(id, target),
                       })}
-                      <wa-dropdown
+                      <Menu
+                        id={`sidebar-agent-roster-${card().id}`}
                         class="sidebar-customize-menu sidebar-agent-roster__menu"
                         placement="bottom-end"
-                        onWa-show={() => {
+                        label={t("agentsHome.agentOptions", { agent: card().name })}
+                        triggerClass="sidebar-agent-roster__action"
+                        trigger={<Icon name="moreHorizontal" />}
+                        onBeforeShow={() => {
                           roster.host().dismissTransientMenus();
                           setMenuOpened(true);
+                          // Menu admission checks its rows before the opening event returns.
+                          flush();
                         }}
-                        onWa-select={(event: WaSelectEvent) => {
-                          switch (event.detail.item.getAttribute("value")) {
-                            case null:
-                              break;
+                        onSelect={(item) => {
+                          switch (item.id) {
                             case "main":
                               roster.host().openMainSession(card().id);
                               break;
@@ -346,39 +359,31 @@ function SidebarAgentRosterContent(
                               break;
                           }
                         }}
-                      >
-                        <button
-                          slot="trigger"
-                          type="button"
-                          class="sidebar-agent-roster__action"
-                          aria-label={t("agentsHome.agentOptions", { agent: card().name })}
-                        >
-                          <Icon name="moreHorizontal" />
-                        </button>
-                        <Show when={menuOpened()}>
-                          <wa-dropdown-item class="sidebar-customize-menu__item" value="main">
-                            <span slot="icon" class="nav-item__icon">
-                              <Icon name="messageSquare" />
-                            </span>
-                            {t("agentsHome.openMainChat")}
-                          </wa-dropdown-item>
-                          <wa-dropdown-item class="sidebar-customize-menu__item" value="sessions">
-                            <span slot="icon" class="nav-item__icon">
-                              <Icon name="listTree" />
-                            </span>
-                            {t("agentsHome.allSessions")}
-                          </wa-dropdown-item>
-                          <wa-dropdown-item
-                            class="sidebar-customize-menu__item"
-                            value="collapse-others"
-                          >
-                            <span slot="icon" class="nav-item__icon">
-                              <Icon name="foldVertical" />
-                            </span>
-                            {t("agentsHome.collapseOthers")}
-                          </wa-dropdown-item>
-                        </Show>
-                      </wa-dropdown>
+                        items={
+                          menuOpened()
+                            ? [
+                                {
+                                  id: "main",
+                                  label: t("agentsHome.openMainChat"),
+                                  class: "sidebar-customize-menu__item",
+                                  icon: <Icon name="messageSquare" />,
+                                },
+                                {
+                                  id: "sessions",
+                                  label: t("agentsHome.allSessions"),
+                                  class: "sidebar-customize-menu__item",
+                                  icon: <Icon name="listTree" />,
+                                },
+                                {
+                                  id: "collapse-others",
+                                  label: t("agentsHome.collapseOthers"),
+                                  class: "sidebar-customize-menu__item",
+                                  icon: <Icon name="foldVertical" />,
+                                },
+                              ]
+                            : []
+                        }
+                      />
                     </span>
                   </div>
                   <Show when={!isCollapsed()}>

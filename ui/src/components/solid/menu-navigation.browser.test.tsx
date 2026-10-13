@@ -17,6 +17,76 @@ import { Menu, type MenuItem, type MenuProps } from "./menu.tsx";
 afterEach(cleanup);
 
 describe("Solid menu navigation", () => {
+  it("navigates from search through grouped compound rows and custom controls", async () => {
+    const selected: string[] = [];
+    let pins = 0;
+    const [revision, setRevision] = createSignal(0);
+    mountMenu({
+      get items() {
+        revision();
+        return [
+          { kind: "content", id: "search", content: <input data-search aria-label="Find agent" /> },
+          {
+            kind: "group",
+            id: "agents",
+            class: "agent-list",
+            items: [
+              {
+                id: "alpha",
+                label: "Alpha",
+                as: "div",
+                content: (
+                  <>
+                    Alpha
+                    <button
+                      data-form-control
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        pins += 1;
+                      }}
+                    >
+                      Pin Alpha
+                    </button>
+                  </>
+                ),
+              },
+              { id: "beta", label: "Beta" },
+            ],
+          },
+          {
+            id: "footer",
+            label: "Footer",
+            render: (attributes) => <button {...attributes}>Footer</button>,
+          },
+        ];
+      },
+      onSelect: (entry) => selected.push(entry.id),
+    });
+    await openMenu();
+    const group = surface().querySelector(".agent-list");
+    const footer = item("Footer");
+    setRevision(1);
+    flush();
+    expect(surface().querySelector(".agent-list")).toBe(group);
+    expect(item("Footer")).toBe(footer);
+    const search = surface().querySelector<HTMLInputElement>("input")!;
+    search.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Beta"));
+    await userEvent.click(surface().querySelector<HTMLButtonElement>("[data-form-control]")!);
+    expect(pins).toBe(1);
+    expect(selected).toEqual([]);
+    item("Beta").focus();
+    await userEvent.keyboard("{Enter}");
+    await phase(surface(), "hidden");
+    expect(selected).toEqual(["beta"]);
+    await openMenu();
+    item("Footer").focus();
+    await userEvent.keyboard("{Enter}");
+    await phase(surface(), "hidden");
+    expect(selected).toEqual(["beta", "footer"]);
+  });
+
   it("uses real link leaves, skips disabled links, and selects once by click or Enter", async () => {
     const selected: string[] = [];
     mountMenu({

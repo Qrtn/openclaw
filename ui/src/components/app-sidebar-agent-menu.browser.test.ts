@@ -2,7 +2,6 @@ import { flush } from "solid-js";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
-import "@awesome.me/webawesome/dist/styles/themes/default.css";
 import "../test-helpers/load-styles.ts";
 
 afterEach(() => document.body.replaceChildren());
@@ -11,6 +10,7 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
   it("shows the same mixed avatars in count-aware groups without a backing circle", async () => {
     await import("./app-sidebar.tsx");
     const { renderSidebarAgentMenuSwitcher } = await import("./sidebar-agent-menu-switcher.tsx");
+    const { Menu } = await import("./solid/menu.tsx");
     const image =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR7sAAAAASUVORK5CYII=";
     const agents = Array.from({ length: 8 }, (_, index) => ({
@@ -38,18 +38,23 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
       unmount?.();
       unmount = mountSolid(
         () =>
-          renderSidebarAgentMenuSwitcher({
-            activeId: agents[0]!.id,
-            allAgentsScope: true,
-            query: "",
-            openMode: "hover",
-            agents: agents.slice(0, count),
-            identities: new Map(),
-            pinnedAgentIds: ["agent-0"],
-            onTogglePinnedAgent: async () => {},
-            resolveAvatarUrl: (url) => url,
-            avatarErrorHandler: () => () => {},
-            agentUnreadCount: () => 0,
+          Menu({
+            id: `agent-menu-${count}`,
+            label: "Agents",
+            open: true,
+            items: renderSidebarAgentMenuSwitcher({
+              activeId: agents[0]!.id,
+              allAgentsScope: true,
+              query: "",
+              openMode: "hover",
+              agents: agents.slice(0, count),
+              identities: new Map(),
+              pinnedAgentIds: ["agent-0"],
+              onTogglePinnedAgent: async () => {},
+              resolveAvatarUrl: (url) => url,
+              avatarErrorHandler: () => () => {},
+              agentUnreadCount: () => 0,
+            }),
           }),
         { container: root },
       ).unmount;
@@ -58,7 +63,7 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
         requestAnimationFrame(() => resolve());
       });
       expect(root.querySelectorAll(".sidebar-agent-menu__pin")).toHaveLength(pinCount);
-      const all = root.querySelector('[value="scope:all"]');
+      const all = root.querySelector('[data-value="scope:all"]');
       if (count < 2) {
         expect(all).toBeNull();
         continue;
@@ -135,14 +140,14 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
     // Focus is ready before the dropdown's opening animation finishes.
     const menuShown = new Promise<void>((resolve) => {
       const onShown = (event: Event) => {
-        if (event.target !== sidebar.querySelector("wa-dropdown.sidebar-agent-menu")) {
+        if (event.target !== sidebar.querySelector(".sidebar-agent-menu")) {
           return;
         }
-        sidebar.removeEventListener("wa-after-show", onShown);
+        sidebar.removeEventListener("overlay-after-show", onShown);
         resolve();
       };
-      sidebar.addEventListener("wa-after-show", onShown);
-      onTestFinished(() => sidebar.removeEventListener("wa-after-show", onShown));
+      sidebar.addEventListener("overlay-after-show", onShown);
+      onTestFinished(() => sidebar.removeEventListener("overlay-after-show", onShown));
     });
     sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")?.click();
     await sidebar.updateComplete;
@@ -183,11 +188,11 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
     await sidebar.updateComplete;
     sidebar.querySelector<HTMLButtonElement>(".sidebar-workspace-header__main")?.click();
     await sidebar.updateComplete;
-    const all = sidebar.querySelector<HTMLElement>('[value="scope:all"]');
+    const all = sidebar.querySelector<HTMLElement>('[data-value="scope:all"]');
     await expect.poll(() => document.activeElement).toBe(all);
     expect(all?.getAttribute("aria-current")).toBe("true");
     await userEvent.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(sidebar.querySelector('[value="agent:main"]'));
+    expect(document.activeElement).toBe(sidebar.querySelector('[data-value="agent:main"]'));
   });
 
   it.each([
