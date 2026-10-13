@@ -54,9 +54,21 @@ it("keeps reassigned session cards current through events without polling", asyn
   });
   const boards = [{ id: "ops", total: 1, active: 1, archived: 0, byStatus: { todo: 1 } }];
   let currentCard = card;
-  const request = vi.fn(async (method: string) => {
+  let responseBytes = 0;
+  const request = vi.fn(async (method: string, params: unknown) => {
     if (method === "workboard.cards.list") {
-      return { cards: [currentCard], boards };
+      const result = {
+        cards:
+          params && typeof params === "object" && "sessionKey" in params
+            ? [currentCard]
+            : [
+                currentCard,
+                createWorkboardCard({ id: "history", notes: "history".repeat(10_000) }),
+              ],
+        boards,
+      };
+      responseBytes += JSON.stringify(result).length;
+      return result;
     }
     if (method === "workboard.boards.list") {
       return { boards };
@@ -76,11 +88,16 @@ it("keeps reassigned session cards current through events without polling", asyn
     const accessory = registrations.get("accessory/linked-card") as ControlUiAccessory;
     const mounted = accessory.mount(container, createViewContext(host, context));
     disposeAccessory = () => mounted?.dispose?.();
+    await vi.advanceTimersByTimeAsync(0);
     expect(container.textContent).toContain(card.title);
     await vi.advanceTimersByTimeAsync(15 * 60_000);
-    expect(request.mock.calls).toEqual([["workboard.cards.list", {}]]);
+    expect(request.mock.calls).toEqual([
+      ["workboard.boards.list", {}],
+      ["workboard.cards.list", { sessionKey: session.key }],
+    ]);
+    expect(responseBytes).toBeLessThan(2048);
 
-    // The session accessory follows the catalog's refreshed card state.
+    // The accessory refreshes its own bounded session query.
     currentCard = {
       ...card,
       title: "Current captured conversation",
@@ -90,7 +107,11 @@ it("keeps reassigned session cards current through events without polling", asyn
     fixture.emit("plugin.workboard.changed", { epoch: "catalog-epoch", revision: 1 });
     await vi.advanceTimersByTimeAsync(0);
     expect(container.textContent).toContain(currentCard.title);
-    expect(request.mock.calls).toEqual([["workboard.cards.list", {}]]);
+    expect(request.mock.calls).toEqual([
+      ["workboard.boards.list", {}],
+      ["workboard.cards.list", { sessionKey: session.key }],
+    ]);
+    expect(responseBytes).toBeLessThan(2048);
   } finally {
     disposeAccessory();
     dispose?.();
@@ -211,7 +232,7 @@ it.each(["open", "another board", "hidden"] as const)(
       if (method === "workboard.boards.delete") {
         return deleted.promise;
       }
-      if (method === "workboard.cards.list" && pendingCatalog) {
+      if (method === "workboard.boards.list" && pendingCatalog) {
         const pending = pendingCatalog;
         pendingCatalog = undefined;
         return pending;
@@ -354,7 +375,7 @@ it("disambiguates a created board and its sibling before pinning through a stale
       created = true;
       return { board };
     }
-    if (method === "workboard.cards.list") {
+    if (method === "workboard.cards.list" || method === "workboard.boards.list") {
       return created
         ? refreshed.promise
         : refreshing

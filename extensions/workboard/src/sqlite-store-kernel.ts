@@ -295,6 +295,46 @@ class WorkboardSqliteCardStore implements SyncStore<WorkboardCardStore> {
           ]),
         ]),
       );
+    } else if (scope?.kind === "session-links") {
+      const opaque = /(?:^|:)(?:catalog:|matrix:(?:channel|group):|signal:group:)/i.test(
+        scope.sessionKey,
+      );
+      query = query.where((eb) => {
+        const matches = (column: "session_key" | "execution_session_key") =>
+          opaque
+            ? eb(column, "=", scope.sessionKey)
+            : eb(
+                eb.fn<string>("lower", [eb.fn<string>("trim", [column])]),
+                "=",
+                scope.sessionKey.toLowerCase(),
+              );
+        return eb.or([
+          matches("session_key"),
+          eb.and([eb("execution_id", "!=", ""), matches("execution_session_key")]),
+          ...(["workboard_card_attempts", "workboard_card_events"] as const).map((table) =>
+            eb.exists(
+              eb
+                .selectFrom(table)
+                .select("card_id")
+                .whereRef(`${table}.card_id`, "=", "workboard_cards.id")
+                .where((linked) =>
+                  opaque
+                    ? linked(`${table}.session_key`, "=", scope.sessionKey)
+                    : linked(
+                        linked.fn<string>("lower", [
+                          linked.fn<string>("trim", [`${table}.session_key`]),
+                        ]),
+                        "=",
+                        scope.sessionKey.toLowerCase(),
+                      ),
+                ),
+            ),
+          ),
+        ]);
+      });
+      if (scope.boardId !== undefined) {
+        query = query.where("board_id", "=", scope.boardId);
+      }
     } else if (scope?.kind === "worker-context") {
       const ids = this.workerContextCardIds(scope);
       if (ids.length === 0) {
