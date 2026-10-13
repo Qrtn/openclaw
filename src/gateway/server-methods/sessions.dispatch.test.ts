@@ -928,6 +928,8 @@ describe("sessions.dispatch", () => {
             chatAbortControllers: new Map(),
             getSessionEventSubscriberConnIds: () => new Set(["another-client"]),
           });
+          const cfg = context.getRuntimeConfig();
+          setRuntimeConfigSnapshot(cfg, cfg);
 
           try {
             const changes = vi.fn();
