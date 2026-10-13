@@ -193,18 +193,13 @@ async function withSessionManagerDatabaseWrite<T>(
   options.env = captureSessionTranscriptStorageEnvironment(options.env ?? process.env);
   options.path = resolveOpenClawAgentSqlitePath(options);
   const database = captureOpenClawAgentDatabaseExecution(options);
-  const assertExecution = () => {
-    assertCurrent();
-    database.assertCurrent();
-  };
   try {
     return await runSessionManagerWrite(manager, () =>
       runOpenClawAgentWriteAdmission(
         options,
         () => {
           assertManager();
-          assertExecution();
-          return write({ database, options, assertCurrent: assertExecution });
+          return write({ database, options, assertCurrent });
         },
         true,
         undefined,
