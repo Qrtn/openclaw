@@ -281,11 +281,8 @@ it.each(["commit", "rollback"])(
       }
       observed.queries.length = 0;
       expect(ensureMemoryIndexSchema({ db, ...options })).toEqual({ ftsAvailable: false });
-      if (outcome === "commit") {
-        expect(schemaStatements(observed.queries)).toEqual([]);
-      } else {
-        expect(schemaStatements(observed.queries).length).toBeGreaterThan(0);
-      }
+      // Rollback retains the admission that was committed before the extension.
+      expect(schemaStatements(observed.queries)).toEqual([]);
     } finally {
       observed.restore();
       backfill.mockRestore();
