@@ -540,8 +540,6 @@ class TalkModeManager internal constructor(
   )
 
   private enum class RealtimeCaptureResume {
-    Skipped,
-    Resumed,
     Restart,
     Disconnected,
   }
@@ -619,10 +617,7 @@ class TalkModeManager internal constructor(
             retireRecognizer()
             closePushToTalkRung()
             pttReleaseCompletion = null
-            pttFinalSegments.clear()
-            pttLivePartial = ""
-            lastTranscript = ""
-            lastHeardAtMs = null
+            clearRecognizedTranscript()
             activePttCaptureId = captureId
             pttCompletion = completion
             prepareRealtimeCapturePause(captureId, lease)
@@ -1029,10 +1024,7 @@ class TalkModeManager internal constructor(
         restartJob = null
         silenceJob = null
         closePushToTalkRung()
-        pttFinalSegments.clear()
-        pttLivePartial = ""
-        lastTranscript = ""
-        lastHeardAtMs = null
+        clearRecognizedTranscript()
         _isListening.value = false
         setStatus(nativeText("Off"), state = TalkStatusState.Off)
         stopRealtimeRelay()
@@ -1877,13 +1869,13 @@ class TalkModeManager internal constructor(
     val generation = startGeneration.get()
     val outcome =
       synchronized(realtimeCapturePauseLock) {
-        val current = realtimeCapturePause ?: return@synchronized RealtimeCaptureResume.Skipped
+        val current = realtimeCapturePause ?: return@synchronized null
         if (current.pttCaptureId != captureId || activePttCaptureId != null) {
-          return@synchronized RealtimeCaptureResume.Skipped
+          return@synchronized null
         }
         if (!_isEnabled.value || stopRequested) {
           realtimeCapturePause = null
-          return@synchronized RealtimeCaptureResume.Skipped
+          return@synchronized null
         }
         // Native Talk has no relay ID. A completed PTT turn may have already
         // restarted it; cancellation and empty turns still need that restart.
@@ -1894,22 +1886,22 @@ class TalkModeManager internal constructor(
         val sessionId = current.sessionId
         if (sessionId == null || realtimeSessionId != sessionId) {
           realtimeCapturePause = null
-          return@synchronized RealtimeCaptureResume.Skipped
+          return@synchronized null
         }
         if (!isConnected()) return@synchronized RealtimeCaptureResume.Disconnected
         if (realtimeCaptureJob?.isActive == true || realtimeAppendJob?.isActive == true) {
           realtimeCapturePause = null
-          return@synchronized RealtimeCaptureResume.Skipped
+          return@synchronized null
         }
         realtimeCapturePause = null
         listeningMode = true
         _isListening.value = true
         setStatus(nativeText("Listening"))
         startRealtimeCaptureLocked(sessionId)
-        RealtimeCaptureResume.Resumed
+        null
       }
     when (outcome) {
-      RealtimeCaptureResume.Skipped, RealtimeCaptureResume.Resumed -> {
+      null -> {
         return
       }
 
@@ -2530,14 +2522,18 @@ class TalkModeManager internal constructor(
         listeningMode = false
         retireRecognizer()
         closePushToTalkRung()
-        pttFinalSegments.clear()
-        pttLivePartial = ""
-        lastTranscript = ""
-        lastHeardAtMs = null
+        clearRecognizedTranscript()
         ClearedPushToTalkCapture(transcript = transcript, completion = completion) to release
       }
     release?.cancel()
     return cleared
+  }
+
+  private fun clearRecognizedTranscript() {
+    pttFinalSegments.clear()
+    pttLivePartial = ""
+    lastTranscript = ""
+    lastHeardAtMs = null
   }
 
   private fun finishPushToTalk(
@@ -2933,29 +2929,23 @@ class TalkModeManager internal constructor(
   }
 
   private fun invalidateConfig() {
-    // Keep active capture settings, but invalidate before waiting for the loader
-    // so neither its stale response nor its waiting consumer can use the old revision.
     configCache.updateAndGet { it.copy(loaded = false) }
   }
 
   private suspend fun ensureConfigLoaded() =
     configReloadMutex.withLock {
-      while (true) {
-        currentCoroutineContext().ensureActive()
-        val owner = configCache.get()
-        if (owner.loaded) return@withLock
-        val loaded =
-          try {
-            val res = requestGateway("talk.config", "{}")
-            val root = json.parseToJsonElement(res).asObjectOrNull()
-            TalkConfigCache(TalkModeGatewayConfigParser.parse(root?.get("config").asObjectOrNull()), loaded = true)
-          } catch (err: Throwable) {
-            if (err is CancellationException) throw err
-            TalkConfigCache()
-          }
-        // Only invalidation requires another read; a current failure returns once.
-        if (configCache.compareAndSet(owner, loaded)) return@withLock
-      }
+      if (configCache.get().loaded) return@withLock
+      val loaded =
+        try {
+          val res = requestGateway("talk.config", "{}")
+          val root = json.parseToJsonElement(res).asObjectOrNull()
+          TalkConfigCache(TalkModeGatewayConfigParser.parse(root?.get("config").asObjectOrNull()), loaded = true)
+        } catch (err: Throwable) {
+          if (err is CancellationException) throw err
+          TalkConfigCache()
+        }
+      // A config change during this read takes effect on the next explicit refresh or Talk restart.
+      configCache.set(loaded)
     }
 
   private fun resolvedSpeechLocaleTag(): String = speechLocale ?: Locale.getDefault().toLanguageTag()

@@ -18,7 +18,8 @@ import {
 import { getUserPreferences, setUserPreferences } from "./user-preferences.test-support.js";
 import { readUserProfileVersion } from "./user-profile-events.js";
 import { readUserProfileSnapshotSync } from "./user-profile-identity.read.js";
-import { retainUserProfileCatalog } from "./user-profile-list.js";
+import { getUserProfileListItem } from "./user-profile-list-item.test-support.js";
+import { prepareUserProfileCatalog } from "./user-profile-list.js";
 import {
   linkEmail,
   setAvatar,
@@ -39,12 +40,15 @@ import {
   ensureProfileForEmail,
   ensureProfileForTailscaleIdentity,
   getUserProfileDisplay,
-  getUserProfileListItem,
 } from "./user-profiles.js";
 
+const catalogReleases: Array<() => void> = [];
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
     vi.restoreAllMocks();
+    for (const release of catalogReleases.splice(0)) {
+      release();
+    }
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     cleanup();
@@ -153,7 +157,10 @@ describe("user profiles", () => {
       const profile = ensureProfileForEmail("reader@example.test", options);
       setUserProfileRole(profile.id, "maintainer", options);
       expect(setAvatar(profile.id, new Uint8Array([1, 2, 3]), "image/png", options).ok).toBe(true);
-      const reader = openNodeSqliteDatabase(options.path, { readOnly: true });
+      const reader =
+        mode === "unadmitted"
+          ? new (requireNodeSqlite().DatabaseSync)(options.path, { readOnly: true })
+          : openNodeSqliteDatabase(options.path, { readOnly: true });
       enableNodeSqliteKyselyStatementCache(reader);
       if (mode !== "unadmitted") {
         admitSqliteSchema(reader);
@@ -238,7 +245,7 @@ describe("user profiles", () => {
     });
   });
 
-  it("persists GitHub names on the surviving merge head", () => {
+  it("persists GitHub names on the surviving merge head", async () => {
     const target = github(10, "Ada", { alias: "ada" });
     setDisplayName(target.id, "Ada", options);
     const source = ensureProfileForEmail("alias@example.com", options);
@@ -249,6 +256,7 @@ describe("user profiles", () => {
     });
     expect(updated).toMatchObject({ id: target.id, displayName: "Ada Lovelace" });
     closeOpenClawStateDatabaseForTest();
+    catalogReleases.push((await prepareUserProfileCatalog(options)).release);
     expect(getUserProfileDisplay(source.id, options)).toMatchObject({
       id: target.id,
       displayName: "Ada Lovelace",
@@ -403,7 +411,7 @@ describe("user profiles", () => {
     }
   });
 
-  it("migrates legacy provider logins while preserving profiles and real emails", () => {
+  it("migrates legacy provider logins while preserving profiles and real emails", async () => {
     const provider = ensureProfileForEmail("user@github", options);
     const email = ensureProfileForEmail("person@gmail.com", options);
     setDisplayName(provider.id, "User Chosen", options);
@@ -420,6 +428,7 @@ describe("user profiles", () => {
     expect(db.prepare("SELECT email, profile_id FROM user_profile_emails").all()).toEqual([
       { email: "person@gmail.com", profile_id: email.id },
     ]);
+    catalogReleases.push((await prepareUserProfileCatalog(options)).release);
     expect(getUserProfileDisplay(provider.id, options).displayName).toBe("User Chosen");
     expect(getProfileAvatar(provider.id, options)?.bytes).toEqual(new Uint8Array([9, 8, 7]));
   });
@@ -502,7 +511,7 @@ describe("avatar database lifetime", () => {
       const profile = ensureProfileForEmail("avatar-reader@example.test", { env });
       expect(setAvatar(profile.id, new Uint8Array([1]), "image/png", { env }).ok).toBe(true);
       const { path } = openOpenClawStateDatabase({ env });
-      const release = resident ? retainUserProfileCatalog({ path }) : () => {};
+      const release = resident ? (await prepareUserProfileCatalog({ path })).release : () => {};
       const reader = createProfileAvatarReader(profile.id, resident ? { path } : { env });
       const prepared = await reader.inspect();
       const revision = readUserProfileVersion();

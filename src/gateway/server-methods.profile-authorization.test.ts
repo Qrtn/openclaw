@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { getUserProfileListItem } from "../state/user-profile-list-item.test-support.js";
 import { linkEmail } from "../state/user-profile-writes.worker.js";
-import { ensureProfileForEmail, getUserProfileListItem } from "../state/user-profiles.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
 import { READ_SCOPE, SESSION_READ_SCOPE } from "./operator-scopes.js";
@@ -169,6 +172,7 @@ describe("Gateway pending-profile authorization", () => {
     "rechecks bound webchat talk.mode after node discovery (profile merged: %s)",
     async (merge) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        setRuntimeConfigSnapshot({});
         const email = "talk-source@example.test";
         const source = ensureProfileForEmail(email);
         const target = ensureProfileForEmail("talk-target@example.test");
@@ -244,6 +248,7 @@ describe("Gateway pending-profile authorization", () => {
 
   it("keeps the actual settings writer unchanged when a selected account merges during preparation", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      setRuntimeConfigSnapshot({});
       const source = ensureProfileForEmail("patch-source@example.test");
       const target = ensureProfileForEmail("patch-target@example.test");
       const scope = { agentId: "main", sessionKey: "agent:main:bound-patch" };
@@ -637,7 +642,16 @@ describe("Gateway self-profile scope", () => {
       const reader = createPendingProfileClient();
       reader.authenticatedUserId = email;
       reader.connect.scopes = ["operator.read"];
-      const self = await dispatchPendingProfileMethod({ client: reader, method: "users.self" });
+      const sql = observeHostDataSql();
+      const self = await dispatchPendingProfileMethod({
+        client: reader,
+        method: "users.self",
+      }).finally(sql.restore);
+      expect(
+        sql.queries.filter((statement) =>
+          /\buser_profile(?:s|_emails|_identities)\b/u.test(statement),
+        ),
+      ).toEqual([]);
 
       const anonymous = createPendingProfileClient();
       delete anonymous.authenticatedUserId;

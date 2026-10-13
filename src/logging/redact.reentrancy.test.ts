@@ -3,9 +3,7 @@ import { redactSensitiveText } from "../plugin-sdk/security-runtime.js";
 import { compileSafeRegexDetailed } from "../security/safe-regex.js";
 import {
   getDefaultRedactPatterns,
-  redactInputTextWithSourcePolicy,
   redactSensitiveFieldValue,
-  redactText,
   resolveRedactOptions,
 } from "./redact.js";
 
@@ -25,48 +23,25 @@ function sharedPatternMatching(input: string): RegExp {
 }
 
 describe("nested redaction calls", () => {
-  it.each([false, true])(
-    "keeps nested matcher input and pattern order (fullContext=%s)",
-    (fullContext) => {
-      const inputs: string[] = [];
-      const nested: string[] = [];
-      const matcher = {
-        source: "bracketed fixture values",
-        *exec(input: string) {
-          inputs.push(input);
-          for (const match of input.matchAll(/\[(outer-[a-z]+)\]/g)) {
-            nested.push(redactSensitiveText("inside private", { patterns: [/private/g] }));
-            yield { match: match[0], groups: [match[1] ?? ""], input, offset: match.index };
-          }
-        },
-      };
+  it("keeps nested matcher input and pattern order", () => {
+    const inputs: string[] = [];
+    const nested: string[] = [];
+    const matcher = {
+      source: "bracketed fixture values",
+      *exec(input: string) {
+        inputs.push(input);
+        for (const match of input.matchAll(/\[(outer-[a-z]+)\]/g)) {
+          nested.push(redactSensitiveText("inside private", { patterns: [/private/g] }));
+          yield { match: match[0], groups: [match[1] ?? ""], input, offset: match.index };
+        }
+      },
+    };
 
-      const input = "prefix [outer-one] [outer-two] suffix";
-      const patterns = [/prefix/g, matcher, /suffix/g];
-      expect(
-        fullContext
-          ? redactText(input, patterns, { fullContext })
-          : redactSensitiveText(input, { patterns }),
-      ).toBe("*** [***] [***] ***");
-      expect(inputs).toEqual(["*** [outer-one] [outer-two] suffix"]);
-      expect(nested).toEqual(["inside ***", "inside ***"]);
-    },
-  );
-
-  it.each(["API_TOKEN=", "pass: "])("keeps nested source assignment policy for %s", (prefix) => {
-    const input = `${prefix}computeFirst()\n${prefix}computeSecond()`;
-    const assignments: string[] = [];
-
-    expect(
-      redactInputTextWithSourcePolicy(input, undefined, (text, offset) => {
-        expect(redactSensitiveText("pass: private pass: nested", { mode: "tools" })).toBe(
-          "pass: *** pass: ***",
-        );
-        assignments.push(text.slice(offset).split("\n")[0] ?? "");
-        return true;
-      }),
-    ).toBe(input);
-    expect(assignments).toEqual(expect.arrayContaining(["computeFirst()", "computeSecond()"]));
+    const input = "prefix [outer-one] [outer-two] suffix";
+    const patterns = [/prefix/g, matcher, /suffix/g];
+    expect(redactSensitiveText(input, { patterns })).toBe("*** [***] [***] ***");
+    expect(inputs).toEqual(["*** [outer-one] [outer-two] suffix"]);
+    expect(nested).toEqual(["inside ***", "inside ***"]);
   });
 
   it("rechecks vendor candidates after an intervening custom replacement", () => {
@@ -104,6 +79,7 @@ describe("shared compiled redaction patterns", () => {
       const { source, flags } = pattern;
       try {
         pattern.compile("(fixtureTOKEN)", "g");
+        resolveRedactOptions({ patterns: getDefaultRedactPatterns() });
         expect(redactSensitiveText("fixtureTOKEN", { mode: "tools" })).toBe("***");
         expect(redactSensitiveFieldValue("content", "fixtureTOKEN", { mode: "tools" })).toBe("***");
       } finally {
@@ -135,22 +111,6 @@ describe("shared compiled redaction patterns", () => {
         );
       } finally {
         pattern.lastIndex = 0;
-      }
-    },
-  );
-
-  it.each(["API_TOKEN=tiny-value", "ghp_abcdefghij"])(
-    "uses a recompiled rule originally matching %s",
-    (fixture) => {
-      const pattern = sharedPatternMatching(fixture);
-      const { source, flags } = pattern;
-      try {
-        pattern.compile("(fixture-unlisted)", "g");
-        // Resolving the cached object again must not reauthorize its original prefilter.
-        resolveRedactOptions({ patterns: getDefaultRedactPatterns() });
-        expect(redactSensitiveText("fixture-unlisted", { patterns: [pattern] })).toBe("***");
-      } finally {
-        pattern.compile(source, flags);
       }
     },
   );

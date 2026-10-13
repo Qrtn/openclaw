@@ -29,6 +29,7 @@ import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.
 import type { ReplyDeliveryState } from "../../reply-completion.js";
 import type { AgentRuntimeModelAttempt, AgentRuntimePlan } from "../../runtime-plan/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import type { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import type { SandboxContext } from "../../sandbox/types.js";
 import type { AuthStorage, ModelRegistry } from "../../sessions/index.js";
 import type { ToolEffectReceipt } from "../../tool-effect-receipt.js";
@@ -237,6 +238,13 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   registerPluginRuntimeRefreshConsumer?: (isCurrent: () => boolean) => void;
   /** Completed native attempt results excluded by the original admission read fence. */
   pluginRuntimeRefreshMessages?: AgentMessage[];
+  /** Host-owned same-turn recovery context; never a new user turn or execution authority. */
+  continuation?: {
+    /** Original current request, retained outside bounded historical projections. */
+    prompt: string;
+    /** Settled attempt snapshots, in order, including completed tool calls and results. */
+    messages: AgentMessage[];
+  };
   /** Run-owned permission changes survive native attempt replacement, never user cancellation. */
   permissionChange?: {
     readonly owner: object;
@@ -271,6 +279,8 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
 
 export type EmbeddedRunAttemptResult = {
   terminal: AgentRunAttemptTerminal;
+  /** Prepared policy that explains unavailable tools without another session read. */
+  sandboxRuntime?: ReturnType<typeof resolveSandboxRuntimeStatus>;
   /** True when the runtime made the authoritative final-assistant transcript decision. */
   assistantTranscriptOwned?: boolean;
   /** Exact idempotency key for the runtime-owned final-assistant transcript row. */

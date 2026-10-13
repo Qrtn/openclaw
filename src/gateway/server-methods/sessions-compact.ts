@@ -41,6 +41,7 @@ import { getWorkerInferenceSessionControl } from "../worker-environments/inferen
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
+import { waitForTerminalSessionRunSettlement } from "./session-run-settlement.js";
 import {
   preflightGatewaySessionCompaction,
   runGatewaySessionCompaction,
@@ -161,13 +162,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           );
           return;
         }
-      } else {
-        const transcriptStats = await readTranscriptStatsAsync(transcriptScope);
-        assertRequestCurrent();
-        if (transcriptStats.eventCount === 0) {
-          respondNotCompacted({ reason: "no transcript" });
-          return;
-        }
       }
 
       const lifecycleRevision = entry.lifecycleRevision;
@@ -188,6 +182,18 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
       const lifecycleIdentities = [...queueIdentities, lifecycleRevision];
       let admissionError: ReturnType<typeof errorShape> | undefined;
       let compactionNoopReason: string | undefined;
+      let preparedEntry: InternalSessionEntry | undefined;
+      let noTranscript = false;
+      const terminalSettled = await waitForTerminalSessionRunSettlement({
+        context,
+        storePath,
+        requestedKey: key,
+        canonicalKey: target.canonicalKey,
+        sessionId,
+        agentId: requestedAgentId,
+        defaultAgentId: compatibilityDefaultAgentId,
+        signal: abortSignal,
+      });
       await runExclusiveSessionLifecycleMutation("compact", {
         scope: storePath,
         identities: lifecycleIdentities,
@@ -196,15 +202,21 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         prepare: async () => {
           assertRequestCurrent();
           if (maxLines === undefined) {
-            const latestEntry = await readCurrentEntry();
-            if (!latestEntry) {
+            preparedEntry = await readCurrentEntry();
+            if (!preparedEntry) {
               admissionError = sessionChangedError();
+              return;
+            }
+            const transcriptStats = await readTranscriptStatsAsync(transcriptScope);
+            assertRequestCurrent();
+            noTranscript = transcriptStats.eventCount === 0;
+            if (noTranscript) {
               return;
             }
             compactionNoopReason = (
               await preflightGatewaySessionCompaction({
                 cfg,
-                entry: latestEntry,
+                entry: preparedEntry,
                 agentId: target.agentId,
                 sessionId,
                 sessionKey: target.canonicalKey,
@@ -217,6 +229,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             }
           }
           const blockedByActiveRun =
+            !terminalSettled ||
             isCompetingSessionWorkAdmissionActive(storePath, lifecycleIdentities) ||
             (getWorkerInferenceSessionControl(context.workerEnvironmentService)?.hasSession(
               sessionId,
@@ -249,6 +262,10 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           assertRequestCurrent();
           if (admissionError) {
             respond(false, undefined, admissionError);
+            return;
+          }
+          if (noTranscript) {
+            respondNotCompacted({ reason: "no transcript" });
             return;
           }
           if (compactionNoopReason) {
@@ -305,15 +322,10 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             return;
           }
 
-          const latestEntry = await readCurrentEntry();
+          // The lifecycle owner spans preparation and execution.
+          const latestEntry = preparedEntry;
           if (!latestEntry) {
             respond(false, undefined, sessionChangedError());
-            return;
-          }
-          const transcriptStats = await readTranscriptStatsAsync(transcriptScope);
-          assertRequestCurrent();
-          if (transcriptStats.eventCount === 0) {
-            respondNotCompacted({ reason: "no transcript" });
             return;
           }
           emitSessionOperation(context, {
@@ -386,6 +398,8 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                       ...projectCompactionAccountingPatch(existingEntry, {
                         compactionKind: result.compactionKind,
                         tokensAfter: result.result?.tokensAfter,
+                        transcriptByteCompactionLatch:
+                          result.compactionKind === "native-harness" ? undefined : null,
                       }),
                     },
                   };

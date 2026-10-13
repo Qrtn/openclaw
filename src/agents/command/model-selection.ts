@@ -44,7 +44,7 @@ import {
 } from "../agent-scope.js";
 import { isStoredCredentialCompatibleWithAuthProvider } from "../auth-profiles/order.js";
 import { clearSessionAuthProfileOverride } from "../auth-profiles/session-override.js";
-import { ensureAuthProfileStore } from "../auth-profiles/store-runtime.js";
+import { ensureAuthProfileStoreAsync } from "../auth-profiles/store-runtime.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { resolveAvailableAgentHarnessPolicy } from "../harness/selection.js";
 import { resolveModelProviderAuthConfig } from "../model-auth-provider-route.js";
@@ -64,7 +64,6 @@ import { resolveOperatorModelDefault } from "../operator-model-policy.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../session-runtime-compat.js";
 import {
-  needsThinkHydration,
   normalizeThinkingCatalogProviders,
   resolveEffectiveAgentRuntime,
 } from "../thinking-runtime.js";
@@ -75,7 +74,6 @@ import {
   parseAgentCommandModelRef,
 } from "./model-ref.js";
 import { prepareCommandModelCatalog } from "./model-selection-catalog.js";
-import { loadTranscriptResolveRuntime } from "./runtime-loaders.js";
 import type { AgentCommandOpts, AgentRunContext } from "./types.js";
 
 export async function resolveEmbeddedModelSelection(params: {
@@ -165,16 +163,12 @@ export async function resolveEmbeddedModelSelection(params: {
     // Durable harness locks own their model metadata and bypass generic repair entirely.
     const initialEntry = sessionEntry;
     const entry = { ...sessionEntry };
-    let entryUpdated = false;
-    if (hasLegacyAutoFallbackWithoutOrigin(entry)) {
-      const { updated } = applyModelOverrideToSessionEntry({
+    const resetToDefaultModel = () =>
+      applyModelOverrideToSessionEntry({
         entry,
         selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
-      });
-      if (updated) {
-        entryUpdated = true;
-      }
-    }
+      }).updated;
+    let entryUpdated = hasLegacyAutoFallbackWithoutOrigin(entry) && resetToDefaultModel();
     const repaired = repairProviderWrappedModelOverride({ entry, defaultProvider, defaultModel });
     entryUpdated ||= repaired.updated;
     const directOverride = resolveDirectStoredModelOverride({
@@ -189,10 +183,7 @@ export async function resolveEmbeddedModelSelection(params: {
         model: directOverride.model,
       };
       if (!hasSessionAutoModelSelection(entry) && !visibilityPolicy.allows(normalizedOverride)) {
-        const { updated } = applyModelOverrideToSessionEntry({
-          entry,
-          selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
-        });
+        const updated = resetToDefaultModel();
         entryUpdated ||= updated;
       }
     }
@@ -434,7 +425,7 @@ export async function resolveEmbeddedModelSelection(params: {
       metadataSnapshot: params.pluginsEnabled ? params.manifestMetadataSnapshot : { plugins: [] },
     });
     const agentDir = resolveAgentDir(params.cfg, params.sessionAgentId);
-    const store = ensureAuthProfileStore(agentDir, {
+    const store = await ensureAuthProfileStoreAsync(agentDir, {
       profileId: authProfileId,
       config: params.cfg,
       allowKeychainPrompt: false,
@@ -534,10 +525,9 @@ export async function resolveEmbeddedModelSelection(params: {
       : params.configuredThinkingCatalog;
   if (
     params.pluginsEnabled &&
-    (primaryConfiguredThinkLevel !== "off" || thinkingRuntime !== "openclaw") &&
-    needsThinkHydration(catalogForThinking, provider, model, thinkingRuntime)
+    (primaryConfiguredThinkLevel !== "off" || thinkingRuntime !== "openclaw")
   ) {
-    // Thinking capability is a per-model fact; never materialize the full live catalog here.
+    // Read the admitted observation even when static/configured reasoning is already known.
     const { loadProviderScopedThinkingCatalog } = await import("../model-catalog.runtime.js");
     const runtimeCatalog = normalizeThinkingCatalogProviders(
       await loadProviderScopedThinkingCatalog({
@@ -616,20 +606,12 @@ export async function resolveEmbeddedModelSelection(params: {
     };
   }
 
-  const { resolveSessionTranscriptFile } = await loadTranscriptResolveRuntime();
   assertOperatorModelAllowed(operatorAuthority, { provider, model });
   // Fallback tokens must not adopt entries from a store without a nonempty session key.
-  const hasKeyedSessionStore = Boolean(params.sessionStore && params.sessionKey);
-  const resolvedSessionFile = await resolveSessionTranscriptFile({
-    sessionKey: params.sessionKey ?? params.sessionId,
-    sessionStore:
-      hasKeyedSessionStore && !params.suppressVisibleSessionEffects
-        ? params.sessionStore
-        : undefined,
-    sessionEntry,
-  });
-  const sessionFile = resolvedSessionFile.sessionFile;
-  sessionEntry = resolvedSessionFile.sessionEntry;
+  const sessionFile = params.sessionKey ?? params.sessionId;
+  if (params.sessionKey && !params.suppressVisibleSessionEffects) {
+    sessionEntry ??= params.sessionStore?.[params.sessionKey];
+  }
 
   return {
     sessionEntry,
