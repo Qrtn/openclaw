@@ -64,8 +64,8 @@ export function trigger(id = "people"): HTMLButtonElement {
   return element;
 }
 
-export function item(label: string, id = "people"): HTMLButtonElement {
-  const element = [...surface(id).querySelectorAll<HTMLButtonElement>("button")].find(
+export function item(label: string, id = "people"): HTMLElement {
+  const element = [...surface(id).querySelectorAll<HTMLElement>('[role^="menuitem"]')].find(
     (candidate) =>
       candidate.getAttribute("aria-label") === label &&
       candidate.closest('[role="menu"]') === surface(id),

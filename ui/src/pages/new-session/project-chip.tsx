@@ -76,6 +76,7 @@ export function ProjectChip(props: { params: ProjectChipOptions }) {
           aria-label={`${t("newSession.what")}: ${props.params.state.label}`}
           data-project-id={props.params.projectId || undefined}
           aria-haspopup="dialog"
+          aria-controls="new-session-project-popover"
           aria-expanded={props.params.popoverOpen ? "true" : "false"}
           disabled={props.params.submitting || props.params.pendingPlacement}
           onClick={(event) => {

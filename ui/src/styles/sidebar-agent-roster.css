@@ -127,7 +127,7 @@ openclaw-sidebar-agent-roster {
   min-width: 180px;
 }
 
-.sidebar-new-session-menu__panel .sidebar-agent-roster__link {
+.sidebar-new-session-menu__panel a.sidebar-agent-roster__link {
   padding: 12px 20px;
   cursor: pointer;
 }

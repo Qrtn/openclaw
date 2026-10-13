@@ -241,6 +241,7 @@ export function CheckoutChip(props: { params: CheckoutChipOptions }) {
           aria-label={`${t("newSession.checkout")}: ${props.params.state.label}`}
           data-worktree={String(props.params.worktree)}
           aria-haspopup="dialog"
+          aria-controls="new-session-checkout-popover"
           aria-expanded={props.params.popoverOpen ? "true" : "false"}
           disabled={props.params.submitting || props.params.pendingPlacement}
           onClick={(event) => {

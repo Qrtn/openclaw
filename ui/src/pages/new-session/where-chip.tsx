@@ -295,6 +295,7 @@ export function WhereChip(props: { params: WhereChipOptions }) {
           data-device-id={props.params.deviceId || undefined}
           data-auto-device={props.params.autoDevice ? "true" : undefined}
           aria-haspopup="dialog"
+          aria-controls="new-session-where-popover"
           aria-expanded={props.params.popoverOpen ? "true" : "false"}
           disabled={props.params.submitting || props.params.pendingPlacement}
           onClick={(event) => {

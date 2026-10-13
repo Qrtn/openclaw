@@ -216,6 +216,10 @@ export function useMenuMachine(
     loopFocus: true,
     closeOnSelect: false,
     "aria-label": overlay.id,
+    // Zag's synthetic link event is not cancelable; use native activation for app navigation.
+    navigate({ node }) {
+      queueMicrotask(() => node.click());
+    },
     onOpenChange({ open }) {
       const restore = !open && containsComposed(overlay.surface, service.scope.getActiveElement());
       // Native sibling dismissal must not leave focus behind in the retired branch.

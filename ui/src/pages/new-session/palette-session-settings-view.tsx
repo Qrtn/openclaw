@@ -269,6 +269,7 @@ export function PaletteSessionSettingsView(props: { view: SettingsView }) {
         aria-label={t("commandPalette.newSessionSettings")}
         title={t("commandPalette.newSessionSettings")}
         aria-haspopup="dialog"
+        aria-controls={props.view.id + "-settings-popover"}
         aria-expanded={props.view.open ? "true" : "false"}
       >
         <SettingsIcon />
