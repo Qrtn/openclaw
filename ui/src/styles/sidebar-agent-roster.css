@@ -121,8 +121,19 @@ openclaw-sidebar-agent-roster {
   min-height: 0;
 }
 
-.sidebar-new-session-menu::part(menu) {
+.sidebar-new-session-menu__panel {
+  --oc-overlay-distance: 0px;
+
   min-width: 180px;
+}
+
+.sidebar-new-session-menu__panel .sidebar-agent-roster__link {
+  padding: 12px 20px;
+  cursor: pointer;
+}
+
+.sidebar-new-session-menu__panel .oc-menu-item__icon {
+  margin-inline-end: 0;
 }
 
 .sidebar-agent-roster__group {

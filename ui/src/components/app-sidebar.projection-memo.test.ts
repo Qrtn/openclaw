@@ -290,7 +290,8 @@ describe("sidebar projection memo", () => {
     await rosterActivityStore(mounted.context).refresh();
     await settleRoster(mounted.sidebar);
     await newSession.updateComplete;
-    const menuUpdate = vi.spyOn(newSession, "performUpdate");
+    const menuTrigger = newSession.querySelector(".sidebar-new-session");
+    const firstMenuItem = newSession.querySelector('[role="menuitem"]');
     const sessionKey = "agent:main:recent";
     const row = () => sidebar.querySelector(`[data-session-key="${sessionKey}"]`);
     expect(row()).not.toBeNull();
@@ -313,7 +314,8 @@ describe("sidebar projection memo", () => {
     );
     expect(projectRows).not.toHaveBeenCalled();
     expect(sections).not.toHaveBeenCalled();
-    expect(menuUpdate).not.toHaveBeenCalled();
+    expect(newSession.querySelector(".sidebar-new-session")).toBe(menuTrigger);
+    expect(newSession.querySelector('[role="menuitem"]')).toBe(firstMenuItem);
   });
 
   it("invalidates live attention, expiry, outbox snapshots, and store-owned PR and archive facts", async () => {

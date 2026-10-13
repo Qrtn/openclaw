@@ -199,7 +199,9 @@ suite.define(() => {
         expect(await sidebar.locator(".sidebar-agent-roster__menu wa-dropdown-item").count()).toBe(
           0,
         );
-        expect(await sidebar.locator(".sidebar-new-session-menu wa-dropdown-item").count()).toBe(0);
+        expect(
+          await sidebar.locator(".sidebar-new-session-menu .sidebar-agent-roster__avatar").count(),
+        ).toBe(0);
         const rosterMenu = sidebar.locator('[data-agent-group="main"] .sidebar-agent-roster__menu');
         await rosterMenu.getByRole("button", { name: "Options for Harbor", exact: true }).focus();
         await page.keyboard.press("Enter");
@@ -355,16 +357,18 @@ suite.define(() => {
 
         await sidebar.locator(".sidebar-rail .sidebar-new-session").click();
         const newMenu = sidebar.locator(".sidebar-new-session-menu");
-        await expect.poll(() => newMenu.locator("wa-dropdown-item").first().isVisible()).toBe(true);
+        await expect
+          .poll(() => newMenu.locator('[role="menuitem"]').first().isVisible())
+          .toBe(true);
         await page.keyboard.press("Escape");
-        expect(await newMenu.locator("wa-dropdown-item").count()).toBe(4);
+        expect(await newMenu.locator('[role="menuitem"]').count()).toBe(4);
         await sidebar.locator(".sidebar-rail .sidebar-new-session").click();
         expect(
           await newMenu
-            .locator("wa-dropdown-item a")
+            .locator('a[role="menuitem"]')
             .evaluateAll((links) => links.map((link) => link.getAttribute("href"))),
         ).toEqual(["main", "forge", "scout", "bloom"].map((id) => `/new?agent=${id}`));
-        await newMenu.locator('wa-dropdown-item[value="scout"]').click();
+        await newMenu.locator('[role="menuitem"][value="scout"]').click();
         await waitForControlUiRoute(page, { routeId: "new-session", pathname: "/new" });
         expect(new URL(page.url()).searchParams.get("agent")).toBe("scout");
         await sidebar.locator('[data-agent-id="forge"]').click();

@@ -8,6 +8,7 @@ import {
 import { isPointInPolygon } from "@zag-js/rect-utils";
 import { VanillaMachine, normalizeProps } from "@zag-js/vanilla";
 import { createEffect, createSignal, onSettled, untrack } from "solid-js";
+import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
 import type { Overlay } from "../overlay-lifecycle.ts";
 import { containsComposed } from "../overlay-registry.ts";
 
@@ -377,6 +378,15 @@ export function useMenuMachine(
         : api.getItemProps({ value, valueText: label, disabled, closeOnSelect: false });
       return {
         ...result,
+        onClick: (event: MouseEvent) => {
+          if (event.currentTarget instanceof HTMLAnchorElement) {
+            if (!shouldHandleNavigationClick(event)) {
+              return;
+            }
+            event.preventDefault();
+          }
+          result.onClick?.(event);
+        },
         onPointerMove: (event: PointerEvent) => {
           if (event.movementX === 0 && event.movementY === 0) {
             return;

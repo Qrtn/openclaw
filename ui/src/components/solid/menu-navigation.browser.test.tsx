@@ -17,6 +17,43 @@ import { Menu, type MenuItem, type MenuProps } from "./menu.tsx";
 afterEach(cleanup);
 
 describe("Solid menu navigation", () => {
+  it("preserves native link gestures and selects links with keyboard focus", async () => {
+    const selected: string[] = [];
+    mountMenu({
+      items: [{ id: "agent", label: "Agent", href: "/new?agent=writer" }],
+      onSelect: (entry) => selected.push(entry.id),
+    });
+    await openMenu();
+    const link = item("Agent");
+    expect(link.tagName).toBe("A");
+    expect(link.getAttribute("href")).toBe("/new?agent=writer");
+    for (const gesture of [
+      { metaKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { button: 1 },
+    ]) {
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true, ...gesture });
+      let handled = true;
+      link.addEventListener(
+        "click",
+        (click) => {
+          handled = click.defaultPrevented;
+          click.preventDefault();
+        },
+        { once: true },
+      );
+      link.dispatchEvent(event);
+      expect(handled).toBe(false);
+    }
+    expect(selected).toEqual([]);
+    expect(surface().matches(":popover-open")).toBe(true);
+    await userEvent.keyboard("{Enter}");
+    await phase(surface(), "hidden");
+    expect(selected).toEqual(["agent"]);
+    expect(document.activeElement).toBe(trigger());
+  });
+
   it("owns Tab dismissal with caller-selected focus destinations", async () => {
     let credential!: HTMLInputElement;
     let veto = true;

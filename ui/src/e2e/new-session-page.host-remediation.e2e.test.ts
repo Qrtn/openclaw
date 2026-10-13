@@ -84,7 +84,7 @@ suite.define(() => {
         await page.goto(`${suite.server.baseUrl}new`);
         await gateway.waitForRequest("environments.list");
         await openEnvironmentPicker(page);
-        const where = page.locator("wa-popover.new-session-page__where-popover");
+        const where = page.locator(".oc-popover.new-session-page__where-popover");
         const row = where.locator('[data-value="device:paired-device"]');
         await revealReason(row);
         const details = row
@@ -114,7 +114,7 @@ suite.define(() => {
         const palette = page.locator("openclaw-command-palette");
         await palette.locator(".cmd-palette__input").waitFor({ state: "visible" });
         await palette.getByRole("button", { name: "New session settings", exact: true }).click();
-        const settings = palette.locator("wa-popover.palette-session-settings");
+        const settings = palette.locator(".oc-popover.palette-session-settings");
         await settings.locator(".palette-session-settings__workspace").click();
         await settings
           .locator('[data-machine="local"][data-project="docs"]')

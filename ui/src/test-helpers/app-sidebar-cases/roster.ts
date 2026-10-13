@@ -333,12 +333,12 @@ describe("AppSidebar agent roster", () => {
       }
     }
     for (const menu of menus) {
-      expect(menu.querySelectorAll("wa-dropdown-item")).toHaveLength(0);
-      menu.dispatchEvent(new Event("wa-show"));
+      expect(menu.querySelectorAll(".sidebar-agent-roster__avatar")).toHaveLength(0);
+      menu.querySelector<HTMLButtonElement>(".sidebar-new-session")?.click();
       await sidebar.querySelector<LitElement>("openclaw-sidebar-new-session-menu")?.updateComplete;
-      const options = [...menu.querySelectorAll("wa-dropdown-item")];
+      const options = [...menu.querySelectorAll('a[role="menuitem"]')];
       expect(options.map((item) => item.getAttribute("value"))).toEqual(agentIds(sidebar));
-      expect(options.map((item) => item.querySelector("a")?.getAttribute("href"))).toEqual(
+      expect(options.map((item) => item.getAttribute("href"))).toEqual(
         agentIds(sidebar).map((id) => `/new?agent=${id}`),
       );
       expect(options[0]?.textContent).toContain("Harbor");
@@ -346,13 +346,8 @@ describe("AppSidebar agent roster", () => {
         expect(options[2]?.querySelector(".identity-avatar__agent-face")).not.toBeNull(),
       );
     }
-    menus[0]?.dispatchEvent(
-      new CustomEvent("wa-select", {
-        detail: { item: menus[0].querySelector('[value="recent"]') },
-        bubbles: true,
-      }),
-    );
-    expect(onOpen).toHaveBeenCalledWith("recent");
+    menus[0]?.querySelector<HTMLAnchorElement>('[value="recent"]')?.click();
+    await vi.waitFor(() => expect(onOpen).toHaveBeenCalledWith("recent"));
   });
 
   it.each([undefined, "main"])(
