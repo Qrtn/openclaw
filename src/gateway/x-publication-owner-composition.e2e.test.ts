@@ -97,6 +97,8 @@ let networkCase: TransportCase | undefined;
 let rejectIngress: ((error: unknown) => void) | undefined;
 const appToken = "synthetic-x-composition-app-token";
 const userToken = "synthetic-x-composition-user-token";
+const deniedWorkSessionReply =
+  "Work session creation was denied; no public work session was created.";
 
 // Fail closed: never delegate to fetch, credentials, or the network.
 async function xResponse(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -508,9 +510,13 @@ describe("X publication production-owner composition", () => {
               });
             });
             outcomes.set(activeCase, result.details);
+            if (isRecord(result.details) && typeof result.details.error === "string") {
+              text = deniedWorkSessionReply;
+            }
             console.info("[x-proof] spawn result", activeCase, result.details);
           } catch (error) {
             outcomes.set(activeCase, { error: String(error) });
+            text = deniedWorkSessionReply;
             console.info("[x-proof] spawn error", activeCase, String(error));
           }
         } else {
@@ -708,8 +714,8 @@ describe("X publication production-owner composition", () => {
                 );
           await withinTest(
             dispatch.catch((error: unknown) => {
-              // These transitions also forbid the final X reply. The source/
-              // delivery owner may reject dispatch instead of emitting a reply.
+              // Author removal forbids final delivery. Registry retirement may
+              // instead reject the monitor's last plugin-runtime callback.
               if (kind === "author-revoked") {
                 expect(authorRevokedInCatalogWait).toBe(true);
               } else if (kind === "owner-retired") {
@@ -739,9 +745,16 @@ describe("X publication production-owner composition", () => {
             await scheduling.close();
           }
         }
-        expect(networkCase.replies).toHaveLength(
-          kind === "author-revoked" || kind === "owner-retired" ? 0 : 1,
-        );
+        if (kind === "author-revoked") {
+          expect(networkCase.replies, kind).toEqual([]);
+        } else if (kind === "owner-retired") {
+          // Registry retirement blocks new publication, but an admitted plugin
+          // invocation may finish. The unchanged X author can receive only this
+          // harmless failure reply, not a child-session link or successful result.
+          expect(networkCase.replies, kind).toEqual([deniedWorkSessionReply]);
+        } else {
+          expect(networkCase.replies, kind).toHaveLength(1);
+        }
         const publicReads = networkCase.reads.filter((request) => request.appOnly);
         if (kind === "guest") {
           expect(publicReads).toEqual([]);
@@ -821,22 +834,26 @@ describe("X publication production-owner composition", () => {
           } else if (kind === "author-revoked") {
             expect(staleSnapshots.has(kind)).toBe(true);
             expect(authorRevokedInCatalogWait).toBe(true);
-            expect(outcomes.get(kind)).toMatchObject({
+            expect(outcomes.get(kind), kind).toMatchObject({
               error: expect.stringContaining("X allowlist changed"),
             });
           } else {
             expect(staleSnapshots.has(kind)).toBe(true);
             expect(ownerRetiredInCatalogWait).toBe(true);
-            expect(outcomes.get(kind)).toMatchObject({
+            expect(outcomes.get(kind), kind).toMatchObject({
               error: expect.stringContaining("Public ingress owner is no longer current"),
             });
           }
         }
         // No rejected request may leave even a private/orphaned child row.
-        expect(rows()).toHaveLength(1);
-        expect(rows().filter(({ entry }) => resolveSessionPublicShare(entry))).toHaveLength(1);
+        expect(rows(), kind).toHaveLength(1);
+        expect(
+          rows().filter(({ entry }) => resolveSessionPublicShare(entry)),
+          kind,
+        ).toHaveLength(1);
         expect(
           rows().filter(({ entry }) => entry.parentSessionKey === "agent:main:x:group:" + rootId),
+          kind,
         ).toHaveLength(kind === "allowed" ? 1 : 0);
       }
     } finally {
