@@ -366,6 +366,7 @@ test("slow writer failure separates waiting and execution", async () => {
     });
     const scope = { agentId: "main", env: state.env };
     const release = createDeferredCore();
+    const releaseSecond = createDeferredCore();
     const firstStarted = createDeferredCore();
     const order: string[] = [];
     const diagnostics: SqliteSessionReclamationDiagnostics = {};
@@ -400,6 +401,7 @@ test("slow writer failure separates waiting and execution", async () => {
           scope,
           async () => {
             order.push("second:start");
+            await releaseSecond.promise;
             clock += 400;
             throw failure;
           },
@@ -424,7 +426,7 @@ test("slow writer failure separates waiting and execution", async () => {
       clock = 1_600;
       release.resolve();
       expect(await first).toBe("first");
-      expect(order).toEqual(["first:start", "first:end"]);
+      releaseSecond.resolve();
       expect(await settled).toEqual({ error: failure });
       expect(await queuedSuccessor).toBe("queued-successor");
       expect(order).toEqual(["first:start", "first:end", "second:start", "queued-successor"]);
@@ -503,6 +505,7 @@ test("slow writer failure separates waiting and execution", async () => {
       );
     } finally {
       release.resolve();
+      releaseSecond.resolve();
       await Promise.allSettled([first, second, queuedSuccessor]);
       vi.restoreAllMocks();
     }
