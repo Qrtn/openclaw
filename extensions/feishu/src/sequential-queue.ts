@@ -41,10 +41,6 @@ async function boundedRun(
   }
   const resolvedTimeoutMs = resolveTimerTimeoutMs(timeoutMs, DEFAULT_TASK_TIMEOUT_MS);
   await raceWithTimeout(task, resolvedTimeoutMs, () => {
-    try {
-      onTaskTimeout?.(key, resolvedTimeoutMs);
-    } catch {
-      // Swallow logging errors so they cannot poison the queue chain.
-    }
+    onTaskTimeout?.(key, resolvedTimeoutMs);
   });
 }
