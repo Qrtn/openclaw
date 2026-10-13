@@ -392,8 +392,13 @@ it.each(["reference-first", "close-first", "explicit-retirement", "path-replaced
 it.each([false, true])(
   "retains later worker siblings until final close or exit (retained: %s)",
   async (retained) => {
-    const location = path.join(tempDirs.make("sqlite-admission-worker-retention-"), "proof.sqlite");
+    const root = tempDirs.make("sqlite-admission-worker-retention-");
+    const location = path.join(root, "proof.sqlite");
     const database = createDatabase(location);
+    const closedLocation = path.join(root, "closed.sqlite");
+    const closedDatabase = createDatabase(closedLocation);
+    const unrelatedLocation = path.join(root, "unrelated.sqlite");
+    const unrelatedDatabase = createDatabase(unrelatedLocation);
     const relay = createSqliteDatabaseAdmissionRelay(() => {});
     let closeSource: Parameters<RuntimeWorkerGeneration["retain"]>[1] | undefined;
     const source = retained
@@ -423,6 +428,9 @@ it.each([false, true])(
            if (command === "open") {
              database = openNodeSqliteDatabase(workerData.location);
              admitSqliteSchema(database);
+             const closed = openNodeSqliteDatabase(workerData.closedLocation);
+             admitSqliteSchema(closed);
+             closed.close();
            } else if (command === "close") {
              database.close();
            } else if (command === "retire") {
@@ -442,6 +450,7 @@ it.each([false, true])(
       execArgv: [],
       workerData: {
         location,
+        closedLocation,
         port: relay.port,
         loader: import.meta.resolve("tsx/esm/api"),
         native: new URL("./node-sqlite.ts", import.meta.url).href,
@@ -514,7 +523,17 @@ it.each([false, true])(
       const retiredOwner = worker.threadId;
       const stale = structuredClone(recordsFor(location));
       expect(stale[0]!.references.has(retiredOwner)).toBe(true);
+      const beforeExit = readSqliteDatabaseWriteTokenForPath(location);
+      const closedBeforeExit = readSqliteDatabaseWriteTokenForPath(closedLocation);
+      const unrelatedBeforeExit = readSqliteDatabaseWriteTokenForPath(unrelatedLocation);
+      expect(beforeExit).toBeTypeOf("string");
+      expect(closedBeforeExit).toBeTypeOf("string");
+      expect(unrelatedBeforeExit).toBeTypeOf("string");
       await worker.terminate();
+      // An unclean exit cannot certify settled receipts, even for already-closed handles.
+      expect(readSqliteDatabaseWriteTokenForPath(location)).not.toBe(beforeExit);
+      expect(readSqliteDatabaseWriteTokenForPath(closedLocation)).not.toBe(closedBeforeExit);
+      expect(readSqliteDatabaseWriteTokenForPath(unrelatedLocation)).not.toBe(unrelatedBeforeExit);
       const inherited = readSqliteDatabaseAdmissions(
         getEnvironmentData(SQLITE_DATABASE_ADMISSIONS_KEY),
       )?.find((record) => record.location === location);
@@ -534,6 +553,10 @@ it.each([false, true])(
         database.close();
       }
       retireSqliteDatabaseAdmissionForPath(location);
+      closedDatabase.close();
+      unrelatedDatabase.close();
+      retireSqliteDatabaseAdmissionForPath(closedLocation);
+      retireSqliteDatabaseAdmissionForPath(unrelatedLocation);
       const retireSource = await closeSource?.();
       await retireSource?.();
     }
