@@ -195,7 +195,6 @@ function* assembleOpenClawCodingTools(
   }
   options?.recordToolPrepStage?.("tool-policy");
   const execConfig = resolveExecToolConfig({ cfg: options?.config, agentId });
-  const execRuntimeConfig = options?.exec?.config ?? options?.config;
   const sessionPermissionPolicy = options?.sessionPermissionPolicy;
   const coreToolPolicy =
     preparedSurface?.policy ?? prepareCoreToolPolicy({ ...options, agentId }, execConfig);
@@ -272,7 +271,7 @@ function* assembleOpenClawCodingTools(
           execDefaults: {
             ...execDefaults,
             ...effectiveExecPolicy,
-            config: execRuntimeConfig,
+            config: options?.exec?.config ?? options?.config,
             preparedRunEnvironment: options?.exec?.preparedRunEnvironment,
             reviewer: options?.exec?.reviewer ?? execConfig.reviewer,
             reviewTranscript: options?.exec?.reviewTranscript,
