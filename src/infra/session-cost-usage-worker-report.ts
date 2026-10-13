@@ -27,16 +27,9 @@ export function prepareUsageCostReportEntry(params: {
   endMs?: number;
   pricingFingerprint: string;
   throwIfCancelled: () => void;
-  cacheBudget: { remainingBytes: number };
 }) {
   params.throwIfCancelled();
   const blob = params.body(params.row);
-  const cached = decodeUsageCostRollup(
-    params.row.valueJson,
-    params.pricingFingerprint,
-    blob,
-    params.cacheBudget,
-  );
   const envelope = decodeUsageCostRollupEnvelope(params.row.valueJson, params.pricingFingerprint);
   params.throwIfCancelled();
   const startMs = params.startMs ?? Number.NEGATIVE_INFINITY;
@@ -47,8 +40,8 @@ export function prepareUsageCostReportEntry(params: {
     (!Number.isFinite(startMs) || startMs % USAGE_COST_QUARTER_MS === 0) &&
     (!Number.isFinite(endMs) || (endMs + 1) % USAGE_COST_QUARTER_MS === 0);
   const selected =
-    cached && envelope?.projection && aligned ? params.partitions(params.row.key) : undefined;
-  return { blob, cached, envelope, selected };
+    blob && envelope?.projection && aligned ? params.partitions(params.row.key) : undefined;
+  return { valueJson: params.row.valueJson, blob, envelope, selected };
 }
 
 /** Project captured cache inputs; replay opens its own bounded transcript reads. */
@@ -65,7 +58,14 @@ export async function readUsageCostReportEntry(params: {
 }): Promise<UsageCostRollupEntry | null | undefined> {
   const { file, scan } = params;
   params.throwIfCancelled();
-  const { cached, envelope, selected } = params.prepared;
+  const { valueJson, blob, envelope, selected } = params.prepared;
+  const cached = decodeUsageCostRollup(
+    valueJson,
+    scan.pricingFingerprint,
+    blob,
+    params.cacheBudget,
+  );
+  params.throwIfCancelled();
   if (!cached || !envelope?.projection) {
     return cached;
   }

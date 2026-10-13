@@ -413,24 +413,28 @@ export async function executeUsageCostWorker(
               bodies.set(row.key, blob);
               return row;
             });
-            const partitions = readSessionCostUsagePartitionsInDatabase(
-              db,
-              rows.filter((row) => !cacheBudget.deferredPaths.has(row.key)).map((row) => row.key),
-              operation.startMs,
-              operation.endMs,
-              control.throwIfCancelled,
-              cacheBudget,
-            );
+            let partitions: Map<string, UsageCostPartition[]> | undefined;
             const entries = new Map(
               rows.map((row) => [
                 row.key,
                 prepareUsageCostReportEntry({
                   row,
                   ...operation,
-                  cacheBudget,
                   throwIfCancelled: control.throwIfCancelled,
                   body: (cachedRow) => bodies.get(cachedRow.key) ?? null,
-                  partitions: (filePath) => partitions.get(filePath) ?? [],
+                  partitions: (filePath) => {
+                    partitions ??= readSessionCostUsagePartitionsInDatabase(
+                      db,
+                      rows
+                        .filter((cachedRow) => !cacheBudget.deferredPaths.has(cachedRow.key))
+                        .map((cachedRow) => cachedRow.key),
+                      operation.startMs,
+                      operation.endMs,
+                      control.throwIfCancelled,
+                      cacheBudget,
+                    );
+                    return partitions.get(filePath) ?? [];
+                  },
                 }),
               ]),
             );
