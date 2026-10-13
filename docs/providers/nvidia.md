@@ -123,9 +123,9 @@ Lightning or Nemotron 3 Super when you want a smaller Nemotron option, or
 choose one of the third-party models
 hosted in NVIDIA's catalog when their context, latency, or behavior fits better.
 
-## Upcoming models
+## Models
 
-- NVIDIA Nemotron 3.5 Super VL (not yet included in the bundled fallback catalog).
+- NVIDIA Nemotron 3.5 Super VL
 
 ## Bundled fallback catalog
 
