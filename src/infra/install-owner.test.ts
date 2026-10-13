@@ -34,9 +34,12 @@ it.each([
   },
 ])(
   "discovers $owner ownership before any Git, package manager, or registry probe",
-  async (owner) => {
+  async (installOwner) => {
     const root = tempDirs.make("openclaw-install-owner-");
-    await fs.writeFile(path.join(root, "openclaw-install-owner.json"), JSON.stringify(owner));
+    await fs.writeFile(
+      path.join(root, "openclaw-install-owner.json"),
+      JSON.stringify(installOwner),
+    );
     const command = vi
       .spyOn(processExec, "runCommandWithTimeout")
       .mockRejectedValue(new Error("unexpected subprocess"));
@@ -46,12 +49,12 @@ it.each([
       expect(await resolveUpdateInstallKind(root)).toBe("host");
       expect(await resolveUpdateInstallIdentity({ root })).toMatchObject({
         installKind: "host",
-        installOwner: owner,
+        installOwner,
       });
       expect(await checkUpdateStatus({ root, fetchGit: true, includeRegistry: true })).toEqual({
         root,
         installKind: "host",
-        installOwner: owner,
+        installOwner,
         packageManager: "unknown",
       });
       expect(command).not.toHaveBeenCalled();
