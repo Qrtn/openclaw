@@ -18,6 +18,10 @@ OpenClaw is a great personal assistant and a great team assistant.
 A personal install is yours alone; a shared Gateway is a place people work together, so the same session can carry several humans, their credit, and their history.
 We build OpenClaw with OpenClaw on [team.openclaw.ai](https://team.openclaw.ai), and we sometimes invite visitors there.
 
+Local and self-hosted use are first-class deployment choices.
+Hosted services and shared identity should make onboarding and account linking easier, while remaining optional for local and self-hosted use.
+Users should be able to choose where OpenClaw runs and which services they connect.
+
 The current focus is:
 
 Priority:
@@ -34,6 +38,10 @@ Next priorities:
 - Better computer-use and agent harness capabilities
 - Ergonomics across CLI and web frontend
 - Companion apps on macOS, iOS, Android, Windows, and Linux
+
+Reliability means more than a successful first run.
+Updates should complete reliably, errors should explain the next useful action, and sessions, automations, and subagents should have predictable lifecycles.
+Users should be able to see what ran, what failed, what was canceled, and how to recover after an interruption.
 
 Contribution rules:
 
@@ -55,6 +63,10 @@ Core-owned config and auth state are repaired in core doctor code; plugin-owned 
 
 Security in OpenClaw is a deliberate tradeoff: strong defaults without killing capability.
 The goal is to stay powerful for real work while making risky paths explicit and operator-controlled.
+
+A shared Gateway is for collaboration among people within the same trust boundary.
+It is not an isolation boundary between mutually untrusted tenants.
+Team and enterprise deployments must preserve that distinction: separate trust boundaries need isolated Gateways and appropriate host or container isolation, with access controls around them.
 
 Canonical security policy and reporting:
 
@@ -118,11 +130,17 @@ tool, ACPX, plugin, or ClawHub paths.
 
 ### Setup
 
-OpenClaw is currently terminal-first by design.
-This keeps setup explicit: users see docs, auth, permissions, and security posture up front.
+The CLI remains a first-class way to set up and operate OpenClaw.
+We also want guided browser and app onboarding that makes the first useful session easier to reach.
 
-Long term, we want easier onboarding flows as hardening matures.
-We do not want convenience wrappers that hide critical security decisions from users.
+Every setup path should make authentication, permissions, and security choices understandable and explicit.
+Easier setup must preserve secure defaults and informed operator control.
+
+### Localization
+
+Product localization should make the CLI and app interfaces usable in more languages, including human-readable errors and onboarding guidance.
+Commands, identifiers, and protocol values should stay stable across languages.
+Product localization and full-document translation sets are separate scopes; the translation guardrail below does not exclude product localization.
 
 ### Why TypeScript?
 
@@ -134,7 +152,7 @@ It is widely known, fast to iterate in, and easy to read, modify, and extend.
 
 - New core skills when they can live on [ClawHub](https://clawhub.ai/)
 - Full-doc translation sets for all docs (deferred; we plan AI-generated translations later)
-- Commercial service integrations that do not clearly fit the model-provider category
+- Vendor-specific service integrations added directly to core; use plugins or companion projects and extend shared contracts where needed
 - Cloud-based sandbox providers as OpenClaw plugins; implement provider support in [Crabbox](https://github.com/openclaw/crabbox) instead
 - Wrapper channels around already supported channels without a clear capability or security gap
 - MCP work that duplicates existing MCP, ACPX, plugin, or ClawHub paths without a clear product or security gap
