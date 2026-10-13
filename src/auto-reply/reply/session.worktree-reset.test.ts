@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
-import type { OpenClawConfig } from "../../config/config.js";
+import { captureRuntimeConfigAsyncReader, type OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionEntry,
   upsertSessionEntryCore,
@@ -30,6 +30,8 @@ describe("reply reset with a native session worktree", () => {
       const cfg: OpenClawConfig = {
         session: { reset: { mode: "idle", idleMinutes: 1 } },
       };
+      await state.writeConfig(cfg);
+      await captureRuntimeConfigAsyncReader()();
       const repository = project
         ? await createWorktreeSpawnRepositoryFixture(state.path("seeds"))(state.root, "project")
         : undefined;
