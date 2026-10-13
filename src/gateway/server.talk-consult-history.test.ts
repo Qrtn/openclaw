@@ -58,6 +58,7 @@ import {
 } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { createTalkClientAgentConsultRunner } from "./talk/client-agent-consult.js";
+import { prepareTalkSessionTarget } from "./talk/session-target.js";
 import {
   createGatewaySuiteHarness,
   dispatchInboundMessageMock,
