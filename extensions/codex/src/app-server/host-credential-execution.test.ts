@@ -121,6 +121,14 @@ describe.skipIf(process.platform === "win32")("Codex host-owned credential execu
     const failed = await f.execute(command);
     expect(JSON.stringify(failed)).toContain("Reconnect or change GitHub Identity");
     expect(await fs.stat(effect).catch(() => undefined)).toBeUndefined();
+    await fs.mkdir(f.profileDir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      path.join(f.profileDir, "hosts.yml"),
+      "github.com:\n  oauth_token: synthetic-selected-token\n",
+      { mode: 0o600 },
+    );
+    expect(await f.execute(command)).toMatchObject({ success: true });
+    expect(await fs.readFile(effect, "utf8")).toBe("selected");
   });
 
   it.each(["denied", "closed", "revoked", "reassigned"] as const)(
