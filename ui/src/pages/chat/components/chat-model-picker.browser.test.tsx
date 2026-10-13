@@ -108,6 +108,30 @@ it("keeps typing in the filter and preserves focus and query across catalog rere
   expect(params.onModelSelect).toHaveBeenCalledWith("example/beta", "main", undefined);
 });
 
+it("leaves digit shortcuts to a nested native menu", async () => {
+  const { picker, toggle, params, trigger } = mountPicker();
+  await toggle(() => page.getByText("Alpha", { exact: true }).first().click());
+  const menu = document.createElement("div");
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("popover", "manual");
+  const item = document.createElement("button");
+  item.setAttribute("role", "menuitem");
+  item.dataset.shortcut = "1";
+  item.textContent = "Nested choice";
+  menu.append(item);
+  picker.querySelector(".chat-controls__model-menu")!.append(menu);
+  menu.showPopover();
+  item.focus();
+  await userEvent.keyboard("1");
+  expect(params.onModelSelect).not.toHaveBeenCalled();
+  expect(picker.open).toBe(true);
+  menu.hidePopover();
+  menu.remove();
+  trigger.focus();
+  await userEvent.keyboard("1");
+  expect(params.onModelSelect).toHaveBeenCalledWith("example/alpha", "main", undefined);
+});
+
 it("focuses the filter on keyboard open and reopen, and returns Escape to the trigger", async () => {
   const { picker, trigger, search, params, toggle } = mountPicker();
   trigger.focus();
