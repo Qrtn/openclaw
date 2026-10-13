@@ -96,6 +96,7 @@ function capCandidates(
     database,
     overflow: Number.MAX_SAFE_INTEGER,
     excludedKeys,
+    readPreserveKeys: () => undefined,
   }).store;
 }
 

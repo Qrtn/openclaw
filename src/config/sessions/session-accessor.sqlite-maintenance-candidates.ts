@@ -132,7 +132,7 @@ export function readSessionMaintenanceCapCandidates(params: {
   database: Pick<OpenClawAgentDatabase, "db">;
   excludedKeys: ReadonlySet<string>;
   overflow: number;
-  preserveKeys?: ReadonlySet<string>;
+  readPreserveKeys: () => ReadonlySet<string> | undefined;
   preserveRecentMs?: number | null;
 }): { store: Record<string, SessionEntry>; durableNoCandidates: boolean } {
   if (params.overflow <= 0) {
@@ -186,16 +186,21 @@ export function readSessionMaintenanceCapCandidates(params: {
       durableNoCandidates = false;
       continue;
     }
-    if (shouldPreserveMaintenanceEntry({ ...params, key: row.session_key, entry })) {
-      // Runtime ownership and recent activity can end without a durable entry change.
-      durableNoCandidates &&= shouldPreserveMaintenanceEntry({
-        key: row.session_key,
-        entry,
-        preserveRecentMs: null,
-      });
+    if (shouldPreserveMaintenanceEntry({ key: row.session_key, entry, preserveRecentMs: null })) {
       continue;
     }
+    // Intrinsic protection needs no runtime snapshot; runtime/recent protection can end on its own.
     durableNoCandidates = false;
+    if (
+      shouldPreserveMaintenanceEntry({
+        key: row.session_key,
+        entry,
+        preserveKeys: params.readPreserveKeys(),
+        preserveRecentMs: params.preserveRecentMs,
+      })
+    ) {
+      continue;
+    }
     const candidate = {
       key: row.session_key,
       keyBytes,

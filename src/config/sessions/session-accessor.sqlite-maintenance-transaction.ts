@@ -177,9 +177,6 @@ export function readSessionMaintenanceInWorker(
       }
       prepareWorkerAgeFact(database, plan);
       const fastPath = readSessionMaintenanceFastPath(database, input);
-      if (fastPath === "write") {
-        return { kind: "maintenance-write-required" };
-      }
       if (fastPath === "no-op") {
         return {
           kind: "maintenance-plan",

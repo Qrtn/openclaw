@@ -113,7 +113,7 @@ function canSkipSessionEntryMaintenanceInDatabase(
 export function readSessionMaintenanceFastPath(
   database: Pick<OpenClawAgentDatabase, "db">,
   params: Pick<SessionEntryMaintenanceInput, "maintenance" | "forceMaintenance">,
-): "no-op" | "write" | undefined {
+): "no-op" | undefined {
   if (params.maintenance.mode === "warn") {
     return "no-op";
   }
@@ -128,7 +128,7 @@ export function readSessionMaintenanceFastPath(
     maxEntries: params.maintenance.maxEntries,
     force: false,
   })
-    ? "write"
+    ? undefined
     : "no-op";
 }
 
@@ -234,7 +234,7 @@ export function prepareSessionEntryMaintenanceInDatabase(
           const candidates = readSessionMaintenanceCapCandidates({
             database: reader,
             overflow,
-            preserveKeys: readPreserveKeys(),
+            readPreserveKeys,
             preserveRecentMs: maintenance.preserveRecentMs,
             excludedKeys: new Set([...removalReasons.keys(), ...archivedKeys]),
           });
