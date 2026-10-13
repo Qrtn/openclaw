@@ -31,6 +31,7 @@ import type {
 const USAGE_COST_REFRESH_RETRY_MIN_MS = 50;
 const USAGE_COST_PUBLICATION_QUIET_MS = 30_000;
 const USAGE_COST_PUBLICATION_MAX_WAIT_MS = 5 * 60_000;
+const USAGE_COST_PUBLICATION_WAIT_MS = 100;
 const USAGE_COST_REFRESH_BATCH_SIZE = 50;
 const USAGE_COST_REFRESH_RETRY_MAX_MS = 5_000;
 const logger = createSubsystemLogger("usage-cost-cache");
@@ -117,7 +118,7 @@ async function flushPendingUsageCostRefresh(
   try {
     await Promise.race([
       Promise.all(pending),
-      waitForUsageCostRefresh(waiting.signal, USAGE_COST_PUBLICATION_DEBOUNCE_MS),
+      waitForUsageCostRefresh(waiting.signal, USAGE_COST_PUBLICATION_WAIT_MS),
     ]);
     signal?.throwIfAborted();
   } finally {
