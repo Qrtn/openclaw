@@ -146,7 +146,11 @@ export function planDesktopRuntimePlugins(root, { pluginIds: selectedIds } = {})
         throw new Error(`The official ${id} source plugin is missing.`);
       }
     }
-    return { commit, releaseTag: null, pluginIds: [...new Set(selectedIds)].sort() };
+    return {
+      commit,
+      releaseTag: null,
+      pluginIds: [...new Set(selectedIds)].toSorted((a, b) => a.localeCompare(b)),
+    };
   }
   const coreDependencies = runtimeDependencies(root);
   const addedDependencies = new Set();

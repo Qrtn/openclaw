@@ -43,7 +43,9 @@ export function stageInstalledPackage(installed, work, target, plan) {
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         record(file);
-        if (fs.readdirSync(file).length === 0) fs.rmdirSync(file);
+        if (fs.readdirSync(file).length === 0) {
+          fs.rmdirSync(file);
+        }
       }
       else {
         const content = fs.readFileSync(file);
@@ -66,7 +68,9 @@ export function stageInstalledPackage(installed, work, target, plan) {
 
 export function stagePackage(root, work, target) {
   const commit = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  if (desktopRuntimeReleaseTag(root, readJson(path.join(root, "package.json")).version, commit)) return;
+  if (desktopRuntimeReleaseTag(root, readJson(path.join(root, "package.json")).version, commit)) {
+    return;
+  }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-tauri-package-"));
   try {
     const archive = path.join(scratch, "openclaw.tgz");
@@ -78,7 +82,8 @@ export function stagePackage(root, work, target) {
     const home = path.join(scratch, "home");
     fs.mkdirSync(installed);
     fs.mkdirSync(home);
-    fs.writeFileSync(path.join(installed, "package.json"), '{"private":true}\n');
+    fs.writeFileSync(path.join(installed, "package.json"),
+      JSON.stringify({ private: true, allowScripts: { [archive]: true } }));
     const env = {
       PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: home,
       USERPROFILE: home, TMPDIR: scratch, TEMP: scratch, TMP: scratch,
@@ -86,7 +91,7 @@ export function stagePackage(root, work, target) {
     const npm = resolveNpmRunner({ env, npmArgs: ["install", "--prefix", installed,
       "--omit=dev", "--include=optional", "--no-audit", "--no-fund",
       `--os=${target.platform === "windows" ? "win32" : target.platform}`, `--cpu=${target.arch}`,
-      `--allow-scripts=${archive}`, archive] });
+      archive] });
     execFileSync(npm.command, npm.args, { cwd: scratch, stdio: "inherit", env: npm.env ?? env,
       windowsVerbatimArguments: npm.windowsVerbatimArguments });
     stageInstalledPackage(installed, work, target, plan);
