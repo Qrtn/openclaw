@@ -1,5 +1,6 @@
 import { buildControlUiFocusPath } from "@openclaw/session-url-contract";
 import { html, nothing } from "lit";
+import { ref } from "lit/directives/ref.js";
 import "./chat-outbox-recovery.ts";
 import "./components/chat-details.tsx";
 import type { SessionObserverDigest } from "../../../../packages/gateway-protocol/src/index.js";
@@ -186,8 +187,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     const chat = renderChat(paneChatProps);
     const headerDetails = ownsSubagentsPanel
       ? html`<openclaw-chat-details
+          ${ref(this.headerDetailsRef)}
           .props=${paneChatProps}
-          .presented=${livePresentation(paneChatProps.transcriptVisible ?? this.presented)}
+          .mobile=${this.mergedChrome && !this.onBackToSubagents}
+          .presented=${livePresentation(this.mergedChrome ? panePresentation : (paneChatProps.transcriptVisible ?? this.presented))}
         ></openclaw-chat-details>`
       : nothing;
     const subagentStop =
