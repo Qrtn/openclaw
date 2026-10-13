@@ -8,7 +8,6 @@ import type { PluginHookToolRequesterContext } from "../plugins/hook-types.js";
 import { appendRuntimePluginToolGrant } from "../plugins/tool-grant-allowlist.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
-import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import type { SkillSnapshot } from "../skills/types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
@@ -44,7 +43,6 @@ import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.j
 import { createCoreCodingTools } from "./core-coding-tools.js";
 import { applyDelegationCapability } from "./delegation-capability.js";
 import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
-import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveExecToolConfig } from "./lazy-exec-tool.js";
 import { resolveLocalModelLeanPreserveToolNames } from "./local-model-lean.js";
 import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.js";
@@ -198,14 +196,6 @@ function* assembleOpenClawCodingTools(
   options?.recordToolPrepStage?.("tool-policy");
   const execConfig = resolveExecToolConfig({ cfg: options?.config, agentId });
   const execRuntimeConfig = options?.exec?.config ?? options?.config;
-  const preparedRunEnvironment =
-    preparedTools === undefined && execRuntimeConfig && executionAgentId
-      ? prepareGitHubToolEnvironment({
-          config: execRuntimeConfig,
-          sourceConfig: getActiveSecretsRuntimeConfigSnapshot()?.sourceConfig,
-          agentId: executionAgentId,
-        })
-      : undefined;
   const sessionPermissionPolicy = options?.sessionPermissionPolicy;
   const coreToolPolicy =
     preparedSurface?.policy ?? prepareCoreToolPolicy({ ...options, agentId }, execConfig);
@@ -283,7 +273,7 @@ function* assembleOpenClawCodingTools(
             ...execDefaults,
             ...effectiveExecPolicy,
             config: execRuntimeConfig,
-            preparedRunEnvironment,
+            preparedRunEnvironment: options?.exec?.preparedRunEnvironment,
             reviewer: options?.exec?.reviewer ?? execConfig.reviewer,
             reviewTranscript: options?.exec?.reviewTranscript,
             trigger: options?.trigger,
@@ -299,6 +289,7 @@ function* assembleOpenClawCodingTools(
             safeBinTrustedDirs: options?.exec?.safeBinTrustedDirs ?? execConfig.safeBinTrustedDirs,
             safeBinProfiles: options?.exec?.safeBinProfiles ?? execConfig.safeBinProfiles,
             agentId,
+            executionAgentId,
             cleanupMs: options?.exec?.cleanupMs ?? execConfig.cleanupMs,
             scopeKey,
             sessionKey: options?.sessionKey,
