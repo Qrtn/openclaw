@@ -46,6 +46,7 @@ export function renderSidebarReorderMenu(params: {
       trigger={<Icon name="gripVertical" />}
       ref={(value) => {
         handle = value;
+        value.overlay.surface.dataset.chatAutotypeExempt = "";
       }}
       onBeforeShow={() => {
         // Keyed rows move without remounting; refresh all Zag bindings before opening.

@@ -501,7 +501,6 @@ export function Menu(props: BranchProps): JSX.Element {
         class={["oc-overlay oc-menu", props.panelClass]}
         popover="manual"
         role="menu"
-        data-chat-autotype-exempt
         aria-label={props.label}
         dir={direction()}
         onOverlay-after-show={(event: Event) => {

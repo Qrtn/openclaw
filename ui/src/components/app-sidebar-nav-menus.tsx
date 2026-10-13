@@ -85,6 +85,7 @@ export function SidebarDropdown(params: SidebarDropdownProps): JSX.Element {
       }}
       ref={(handle) => {
         const { overlay } = handle;
+        overlay.surface.dataset.chatAutotypeExempt = "";
         if (params.anchor) {
           overlay.setReturnTarget(params.anchor);
         }

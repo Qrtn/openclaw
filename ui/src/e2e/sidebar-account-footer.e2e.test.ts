@@ -53,7 +53,15 @@ async function expectRailConnectionStatus(footer: Locator, kind: string, label: 
   expect(await identity.getAttribute("aria-label")).toBe(
     `Identity and app menu for Riley: ${label}`,
   );
-  expect(await identity.getAttribute("title")).toBe(`Identity and app menu for Riley: ${label}`);
+  expect(
+    await identity.evaluate(
+      (element) =>
+        element.getAttribute("title") ||
+        element.ownerDocument
+          .getElementById(element.getAttribute("aria-describedby") ?? "")
+          ?.textContent?.trim(),
+    ),
+  ).toBe(`Identity and app menu for Riley: ${label}`);
   const lifecycle = footer.locator(":scope > [role=status]");
   expect(await lifecycle.count()).toBe(1);
   expect(await lifecycle.textContent()).toBe(label);

@@ -336,6 +336,7 @@ function SidebarAgentRosterContent(
                         triggerClass="sidebar-agent-roster__action"
                         trigger={<Icon name="moreHorizontal" />}
                         ref={({ overlay }) => {
+                          overlay.surface.dataset.chatAutotypeExempt = "";
                           const trigger = overlay.trigger!;
                           const prepare = () => {
                             setMenuOpened(true);
