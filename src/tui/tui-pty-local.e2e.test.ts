@@ -696,7 +696,6 @@ function buildGatewayModeConfig(params: { tempDir: string; providerBaseUrl: stri
         ),
         skills: [],
         skipBootstrap: true,
-        heartbeat: { agentId: defaultScenario.agentId },
         systemAgent: { agentId: defaultScenario.agentId },
         authInheritance: { agentId: defaultScenario.agentId },
       },
