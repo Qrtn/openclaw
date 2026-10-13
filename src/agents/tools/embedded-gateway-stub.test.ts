@@ -42,7 +42,7 @@ const runtime = vi.hoisted(() => ({
     messages: [] as unknown[],
     pagination: { offset: 0, totalMessages: 0, rawPageMessages: 0 },
   })),
-  resolveTranscriptSessionKeyBySessionIdAsync: vi.fn(
+  resolveSessionKeyBySessionIdAsync: vi.fn(
     async (): Promise<string | undefined> => "agent:main:main",
   ),
   resolveEffectiveChatHistoryMaxChars: vi.fn(() => 100_000),
@@ -86,8 +86,8 @@ describe("embedded gateway stub", () => {
     runtime.getRuntimeConfig.mockClear();
     runtime.resolveSessionKeyFromResolveParams.mockReset();
     runtime.readChatHistoryPage.mockClear();
-    runtime.resolveTranscriptSessionKeyBySessionIdAsync.mockReset();
-    runtime.resolveTranscriptSessionKeyBySessionIdAsync.mockResolvedValue("agent:main:main");
+    runtime.resolveSessionKeyBySessionIdAsync.mockReset();
+    runtime.resolveSessionKeyBySessionIdAsync.mockResolvedValue("agent:main:main");
     runtime.loadGatewaySessionEntryReadOnlyInWorker.mockClear();
     runtime.resolveSessionAgentId.mockClear();
     runtime.resolveSessionStoreKey.mockClear();
@@ -482,9 +482,7 @@ describe("embedded gateway stub", () => {
   it.each([undefined, "agent:main:other"])(
     "rejects a retained transcript with a different or missing owner (%s)",
     async (transcriptSessionKey) => {
-      runtime.resolveTranscriptSessionKeyBySessionIdAsync.mockResolvedValueOnce(
-        transcriptSessionKey,
-      );
+      runtime.resolveSessionKeyBySessionIdAsync.mockResolvedValueOnce(transcriptSessionKey);
       await expect(
         createEmbeddedCallGateway()({
           method: "chat.history",

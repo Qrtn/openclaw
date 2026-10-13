@@ -243,6 +243,8 @@ export async function listSessionEntriesAsync(params: {
   agentId: string;
   env?: NodeJS.ProcessEnv;
   storePath?: string;
+  /** External readers cannot reuse the Gateway process's writer receipts. */
+  readConsistency?: "latest";
 }): Promise<SessionStoreEntrySummary[]> {
   const entries = await readSessionEntrySummariesInWorker({
     ...params,

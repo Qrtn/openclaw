@@ -194,7 +194,7 @@ async function handleChatHistory(params: Record<string, unknown>) {
     agentId: requestedAgentId,
   });
   if (requestedSessionId) {
-    const transcriptSessionKey = await rt.resolveTranscriptSessionKeyBySessionIdAsync({
+    const transcriptSessionKey = await rt.resolveSessionKeyBySessionIdAsync({
       agentId: sessionAgentId,
       sessionId: requestedSessionId,
       storePath,
