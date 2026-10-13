@@ -35,9 +35,13 @@ function escapeMarkdownText(text: string): string {
   return text.replace(MARKDOWN_SPECIAL_CHARS, "\\$1");
 }
 
-function wrapInlineCode(text: string): string {
+function backtickFence(text: string, minimumLength: number): string {
   const maxRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
-  const fence = "`".repeat(maxRun + 1);
+  return "`".repeat(Math.max(minimumLength, maxRun + 1));
+}
+
+function wrapInlineCode(text: string): string {
+  const fence = backtickFence(text, 1);
   const needsPadding = text.startsWith("`") || text.endsWith("`");
   const body = needsPadding ? ` ${text} ` : text;
   return `${fence}${body}${fence}`;
@@ -110,7 +114,8 @@ function renderCodeBlockElement(element: Record<string, unknown>): string {
     "\n",
   );
   const trailingNewline = code.endsWith("\n") ? "" : "\n";
-  return `\`\`\`${language}\n${code}${trailingNewline}\`\`\``;
+  const fence = backtickFence(code, 3);
+  return `${fence}${language}\n${code}${trailingNewline}${fence}`;
 }
 
 function renderElement(
