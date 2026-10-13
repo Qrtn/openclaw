@@ -22,22 +22,27 @@ Local and self-hosted use are first-class deployment choices.
 Hosted services and shared identity should make onboarding and account linking easier, while remaining optional for local and self-hosted use.
 Users should be able to choose where OpenClaw runs and which services they connect.
 
-The current focus is:
+The current focus, in priority order:
 
-Priority:
+Quality and developer experience:
 
 - Security and safe defaults
-- Bug fixes and stability
-- Setup reliability and first-run UX
+- Bug fixes, reliable updates, and actionable errors
+- Straightforward onboarding across CLI, web, and apps
+- Performance, reliable end-to-end tests, and better plugin APIs, tooling, and documentation
 
-Next priorities:
+Runtime capabilities:
 
-- Supporting all major model providers
-- Improving support for major messaging channels (and adding a few high-demand ones)
-- Performance and test infrastructure
-- Better computer-use and agent harness capabilities
-- Ergonomics across CLI and web frontend
-- Companion apps on macOS, iOS, Android, Windows, and Linux
+- Predictable sessions, automations, and subagents
+- Simpler memory and knowledge systems
+- Broad support for major model providers and messaging channels
+- Better computer use and agent harnesses
+
+Operations and surfaces:
+
+- Reliable self-hosted deployments and optional hosted services
+- Efficient infrastructure, CI, and release pipelines
+- Consistent CLI, web, and companion app experiences on macOS, iOS, Android, Windows, and Linux
 
 Reliability means more than a successful first run.
 Updates should complete reliably, errors should explain the next useful action, and sessions, automations, and subagents should have predictable lifecycles.
