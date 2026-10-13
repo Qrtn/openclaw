@@ -103,9 +103,18 @@ describe("Workboard catalog", () => {
       runtime.sync({ request } as unknown as GatewayBrowserClient, true);
       await vi.advanceTimersByTimeAsync(0);
       name = "Renamed";
-      runtime.handleGatewayEvent("plugin.workboard.changed", { epoch: "test", revision: 2 });
+      runtime.handleGatewayEvent("plugin.workboard.changed", {
+        epoch: "test",
+        revision: 2,
+        cardsRevision: 2,
+      });
       await vi.advanceTimersByTimeAsync(0);
-      runtime.handleGatewayEvent("plugin.workboard.changed", { epoch: "test", revision: 2 });
+      runtime.handleGatewayEvent("plugin.workboard.changed", {
+        epoch: "test",
+        revision: 3,
+        cardsRevision: 2,
+        sessionsRevision: 3,
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(request.mock.calls).toEqual([
         ["workboard.boards.list", {}],
@@ -113,6 +122,15 @@ describe("Workboard catalog", () => {
       ]);
       expect(responseBytes).toBeLessThan(512);
       expect(host.state.boards[0]?.name).toBe("Renamed");
+      runtime.handleGatewayEvent("plugin.workboard.changed", { epoch: "test", revision: 4 });
+      await vi.advanceTimersByTimeAsync(0);
+      runtime.handleGatewayEvent("plugin.workboard.changed", {
+        epoch: "restarted",
+        revision: 1,
+        cardsRevision: 2,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(request).toHaveBeenCalledTimes(4);
       expect(host.state.cards).toEqual([]);
       expect(host.state.loaded).toBe(false);
     } finally {

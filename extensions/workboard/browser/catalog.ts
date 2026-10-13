@@ -58,7 +58,9 @@ export class WorkboardCatalog {
     if (
       change &&
       this.lastChange?.epoch === change.epoch &&
-      change.revision <= this.lastChange.revision
+      (change.revision <= this.lastChange.revision ||
+        (change.cardsRevision !== undefined &&
+          change.cardsRevision === this.lastChange.cardsRevision))
     ) {
       return;
     }
