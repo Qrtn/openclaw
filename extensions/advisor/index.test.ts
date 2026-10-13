@@ -88,7 +88,7 @@ function setup(pluginConfig: Record<string, unknown>) {
     runId: "run-1",
   }));
   const info = vi.fn((message: string) => {
-    if (!message.includes("review usage")) {
+    if (!message.includes(" usage for session ")) {
       finished.notify();
     }
   });
@@ -162,6 +162,7 @@ function setup(pluginConfig: Record<string, unknown>) {
     services,
     lifecycles,
     finished: finished.next,
+    nextFork: started.next,
     startService: () => services[0]!.start(serviceContext),
     stopService: () => services[0]!.stop?.(serviceContext),
     startRun: (overrides: Partial<typeof context> = {}) =>
@@ -257,17 +258,33 @@ describe("advisor", () => {
       await run.toolStarted();
       expect(run.forkSession).toHaveBeenCalledOnce();
       const done = run.finished();
+      const nextFork = run.nextFork();
       review.resolve("CORRECTION\nStop editing CI; the user asked only for the README typo.");
+      const verification = await nextFork;
+      expect(run.forkSession).toHaveBeenCalledTimes(2);
+      expect(run.forkSession.mock.calls[1]?.[0]).toMatchObject({
+        sessionKey: "agent:main:main",
+        message: expect.stringContaining(
+          JSON.stringify("Stop editing CI; the user asked only for the README typo."),
+        ),
+        signal: run.forkSession.mock.calls[0]?.[0].signal,
+      });
+      await run.toolStarted();
+      expect(run.forkSession).toHaveBeenCalledTimes(2);
+      verification.resolve("APPROVE\nReturn to the requested README typo; leave CI unchanged.");
       await done;
       expect(run.steer).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           sessionKey: "agent:main:main",
-          text: expect.stringContaining("Stop editing CI"),
+          text: expect.stringContaining("Return to the requested README typo"),
         }),
       );
       expect(run.steer.mock.calls[0]?.[0].text.split("\n\n").at(-1)).toBe(
-        "Stop editing CI; the user asked only for the README typo.",
+        "Return to the requested README typo; leave CI unchanged.",
       );
+      expect(run.info).toHaveBeenCalledWith(expect.stringContaining("advisor: review usage"));
+      expect(run.info).toHaveBeenCalledWith(expect.stringContaining("advisor: verify usage"));
+      expect(run.info).toHaveBeenCalledWith(expect.stringContaining("elapsedMs="));
       if (active) {
         expect(run.enqueue).not.toHaveBeenCalled();
       } else {
@@ -323,6 +340,7 @@ describe("advisor", () => {
       await done;
       expect(run.steer).not.toHaveBeenCalled();
       expect(run.enqueue).not.toHaveBeenCalled();
+      expect(run.forkSession).toHaveBeenCalledOnce();
       expect(run.warn).not.toHaveBeenCalled();
       await run.stopService();
     },
@@ -350,11 +368,95 @@ describe("advisor", () => {
       await done;
       expect(run.steer).not.toHaveBeenCalled();
       expect(run.enqueue).not.toHaveBeenCalled();
+      expect(run.forkSession).toHaveBeenCalledOnce();
       expect(run.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(reason));
       expect(run.warn.mock.calls[0]?.[0].length).toBeLessThan(200);
       await run.stopService();
     },
   );
+
+  it.each([
+    { output: "REJECT", warning: false },
+    { output: "", warning: true },
+    { output: "This draft is fine.", warning: true },
+    { output: "APPROVE", warning: true },
+    { output: "APPROVE\nFix it.\nREJECT", warning: true },
+    { output: null, warning: true },
+  ])(
+    "does not deliver rejected or malformed verification: $output",
+    async ({ output, warning }) => {
+      const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+      await run.startService();
+      await run.startRun();
+      await run.toolStarted();
+      const review = await run.dispatchReview();
+      const nextFork = run.nextFork();
+      const done = run.finished();
+      review.resolve("CORRECTION\nStop duplicate checks.");
+      const verification = await nextFork;
+      if (output === null) {
+        verification.reject(new Error("private provider error ".repeat(1000)));
+      } else {
+        verification.resolve(output);
+      }
+      await done;
+      expect(run.steer).not.toHaveBeenCalled();
+      expect(run.enqueue).not.toHaveBeenCalled();
+      expect(run.forkSession).toHaveBeenCalledTimes(2);
+      if (warning) {
+        expect(run.warn).toHaveBeenCalledOnce();
+        expect(run.warn.mock.calls[0]?.[0].length).toBeLessThan(200);
+      } else {
+        expect(run.warn).not.toHaveBeenCalled();
+        expect(run.info.mock.calls.filter(([line]) => line.includes("no correction"))).toHaveLength(
+          1,
+        );
+      }
+      await run.stopService();
+    },
+  );
+
+  it("cancels verification when the service stops", async () => {
+    const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+    await run.startService();
+    await run.startRun();
+    await run.toolStarted();
+    const review = await run.dispatchReview();
+    const nextFork = run.nextFork();
+    review.resolve("CORRECTION\nStop duplicate checks.");
+    const verification = await nextFork;
+    await run.stopService();
+    expect(verification.signal?.aborted).toBe(true);
+    await expect(verification.result).rejects.toThrow("aborted");
+    expect(run.steer).not.toHaveBeenCalled();
+    expect(run.enqueue).not.toHaveBeenCalled();
+    expect(run.warn).not.toHaveBeenCalled();
+  });
+
+  it("uses one deadline across both stages and fails closed on verification timeout", async () => {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+    await run.startService();
+    await run.startRun();
+    await run.toolStarted();
+    const review = await run.dispatchReview();
+    const nextFork = run.nextFork();
+    const done = run.finished();
+    review.resolve("CORRECTION\nStop duplicate checks.");
+    const verification = await nextFork;
+    expect(timeout).toHaveBeenCalledOnce();
+    expect(review.signal).toBe(verification.signal);
+    deadline.abort();
+    await expect(verification.result).rejects.toThrow("aborted");
+    await done;
+    expect(run.steer).not.toHaveBeenCalled();
+    expect(run.enqueue).not.toHaveBeenCalled();
+    expect(run.warn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Advisor verification failed or timed out"),
+    );
+    await run.stopService();
+  });
 
   it("ignores non-user runs and cancels on reset, disable, and service stop", async () => {
     const run = setup({ everyToolCalls: 1, everyMinutes: 0 });

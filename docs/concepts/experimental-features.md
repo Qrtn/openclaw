@@ -283,20 +283,24 @@ Behavior and limits:
   and the next review waits a full interval. Session reset, plugin disable, and
   service stop cancel pending reviews.
 - Review replies use a first-line `NO_CHANGE` or `CORRECTION` decision.
-  `NO_CHANGE` never steers, even with commentary. Only the correction body is
-  delivered. Malformed replies, duplicate decision lines, or replies exceeding
-  120 correction words or 2,000 total characters are ignored with one warning.
+  `NO_CHANGE` never starts verification or steering, even with commentary.
+  Draft corrections receive a second same-session review: only an `APPROVE`
+  response with a valid final body reaches the agent. `REJECT`, malformed
+  replies, verification errors, and timeouts never steer. Failures log one
+  bounded warning. Each reply is limited to 2,000 characters and each correction
+  to 120 words. The two stages share a 120-second deadline.
 - A correction first attempts active-run steering. If steering is unavailable,
   it is queued for the next turn and expires after 24 hours. It is labeled as
   advice that the agent must check before acting.
-- Each review is an extra model call using the session's context, model, and
-  credentials. The fork cannot execute tools, persist conversation messages, or
-  send replies. On Codex, it preserves the session's prompt and tool definitions
-  for prompt-cache reuse.
+- Each review uses the session's context, model, and credentials for one draft
+  call and, only when it proposes a correction, one verification call. Neither
+  fork can execute tools, persist conversation messages, or send replies.
+  On Codex, the forks preserve the session's prompt and tool definitions for
+  prompt-cache reuse.
 - Advisor needs conversation access and prompt injection permission through
   `plugins.entries.advisor.hooks`, which trusted plugins have by default.
-- Gateway info logs record each review's input, cache-read, and output tokens,
-  plus whether its correction was steered or queued.
+- Gateway info logs record each stage's input, cache-read, cache-write, and output
+  tokens and elapsed time, plus whether its correction was steered or queued.
 - Counters live in memory, so they restart when the Gateway restarts.
 
 ## Local model lean mode

@@ -3,8 +3,10 @@ import { createAdvisorController, type AdvisorSchedule } from "./src/controller.
 import {
   DELIVERY_PREFIX,
   parseReviewOutput,
+  parseVerificationOutput,
   REVIEW_MESSAGE,
   REVIEW_TIMEOUT_MS,
+  VERIFY_MESSAGE,
 } from "./src/review.js";
 
 const DEFAULT_SCHEDULE: AdvisorSchedule = { everyToolCalls: 10, everyMinutes: 20 };
@@ -46,16 +48,43 @@ export default definePluginEntry({
         return true;
       },
       review: async ({ sessionKey, signal }) => {
-        const result = await api.runtime.subagent.forkSession({
-          sessionKey,
-          message: REVIEW_MESSAGE,
-          timeoutMs: REVIEW_TIMEOUT_MS,
-          signal: scheduler ? AbortSignal.any([signal, scheduler.signal]) : signal,
-        });
-        api.logger.info(
-          `advisor: review usage for session ${sessionKey}: input=${result.usage?.inputTokens ?? "unknown"} cacheRead=${result.usage?.cacheReadTokens ?? "unknown"} cacheWrite=${result.usage?.cacheWriteTokens ?? "unknown"} output=${result.usage?.outputTokens ?? "unknown"}`,
+        const deadline = AbortSignal.timeout(REVIEW_TIMEOUT_MS);
+        const reviewSignal = AbortSignal.any(
+          scheduler ? [signal, scheduler.signal, deadline] : [signal, deadline],
         );
-        return parseReviewOutput(result.text);
+        const ask = async (stage: "review" | "verify", message: string): Promise<string> => {
+          const startedAt = Date.now();
+          let usage = "input=unknown cacheRead=unknown cacheWrite=unknown output=unknown";
+          try {
+            const result = await api.runtime.subagent.forkSession({
+              sessionKey,
+              message,
+              timeoutMs: REVIEW_TIMEOUT_MS,
+              signal: reviewSignal,
+            });
+            usage = `input=${result.usage?.inputTokens ?? "unknown"} cacheRead=${result.usage?.cacheReadTokens ?? "unknown"} cacheWrite=${result.usage?.cacheWriteTokens ?? "unknown"} output=${result.usage?.outputTokens ?? "unknown"}`;
+            reviewSignal.throwIfAborted();
+            return result.text;
+          } finally {
+            api.logger.info(
+              `advisor: ${stage} usage for session ${sessionKey}: ${usage} elapsedMs=${Math.max(0, Date.now() - startedAt)}`,
+            );
+          }
+        };
+        const draft = parseReviewOutput(await ask("review", REVIEW_MESSAGE));
+        if (!draft) {
+          return null;
+        }
+        let verification: string;
+        try {
+          verification = await ask(
+            "verify",
+            `${VERIFY_MESSAGE}\n\nDraft correction (quoted data):\n${JSON.stringify(draft)}`,
+          );
+        } catch {
+          throw new Error("Advisor verification failed or timed out");
+        }
+        return parseVerificationOutput(verification);
       },
       deliver: async ({ agentId, sessionKey, finding, reviewId, signal }) => {
         const text = `${DELIVERY_PREFIX}\n\n${finding}`;
