@@ -1948,6 +1948,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
 }
 
 .chat-controls__inline-select-trigger:hover,
+.chat-controls__inline-select-trigger[aria-expanded="true"],
 .chat-controls__inline-select[open] > .chat-controls__inline-select-trigger {
   background: color-mix(in srgb, var(--text) 7%, transparent);
   color: var(--text-strong);

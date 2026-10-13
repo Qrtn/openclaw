@@ -111,7 +111,7 @@ suite.define(() => {
     },
   );
 
-  it("shows the selected permission and disables dropdown motion when requested", async () => {
+  it("preserves permission selection, keyboard shortcuts, and reduced motion", async () => {
     const context = await suite.newBrowserContext({
       locale: "en-US",
       reducedMotion: "reduce",
@@ -126,7 +126,7 @@ suite.define(() => {
       permissionMode: "guarded",
       updatedAt: 2,
     };
-    await installMockGateway(page, {
+    const gateway = await installMockGateway(page, {
       methodResponses: { "sessions.list": chatSessionListResponse([session]) },
       sessionKey: session.key,
     });
@@ -135,7 +135,8 @@ suite.define(() => {
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, session.key));
       const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
       const menu = pane.locator(".chat-controls__permission-menu");
-      await pane.locator('[data-chat-permission-select="true"]').click();
+      const trigger = pane.locator('[data-chat-permission-select="true"]');
+      await trigger.click();
       await pane.locator('[data-chat-permission-option="default"]').waitFor({ state: "visible" });
 
       const [selectedBackground, unselectedBackground, transitionDuration] = await Promise.all([
@@ -149,6 +150,16 @@ suite.define(() => {
       ]);
       expect(selectedBackground).not.toBe(unselectedBackground);
       expect(transitionDuration).toBe(0);
+      await trigger.press("4");
+      const patch = await gateway.waitForRequest("sessions.patch");
+      expect(patch.params).toMatchObject({ permissionMode: "workspace" });
+      await browserExpect(trigger).toHaveAttribute("aria-expanded", "false");
+      await trigger.click();
+      await browserExpect(trigger).toHaveAttribute("aria-expanded", "true");
+      await trigger.press("q");
+      await expect
+        .poll(() => pane.locator(".agent-chat__composer-combobox textarea").inputValue())
+        .toBe("q");
     } finally {
       await suite.closeBrowserContext(context);
     }

@@ -249,6 +249,9 @@ export function useMenuMachine(
             return;
           }
           focusFromKeyboard = event.detail === 0 || pointerFocus() === "menu";
+          if (!focusFromKeyboard) {
+            overlay.trigger?.focus({ preventScroll: true });
+          }
           result.onClick?.(event);
         },
         onKeyDown: (e: KeyboardEvent) => {

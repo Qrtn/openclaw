@@ -178,7 +178,8 @@ const CHAT_DROPDOWN_KEYS = new Set([
 function keyboardShortcutTargetOwnsKey(target: HTMLElement, key: string): boolean {
   return (
     /^[a-z0-9]$/iu.test(key) &&
-    target.matches("wa-dropdown, [data-chat-autotype-shortcuts][open]") &&
+    (target.matches("wa-dropdown, [data-chat-autotype-shortcuts][open]") ||
+      (target.matches('[role="menu"][popover]') && target.matches(":popover-open"))) &&
     target.querySelector(`[data-shortcut="${key.toLowerCase()}"]:not([disabled])`) !== null
   );
 }
@@ -204,9 +205,14 @@ function keyboardEventPathHasInteractiveTarget(event: KeyboardEvent): boolean {
 
 function openDropdownOwnsKey(root: ParentNode, key: string): boolean {
   const surface = root instanceof Element ? (root.closest("openclaw-app") ?? root) : root;
-  return [...surface.querySelectorAll<HTMLElement & { open?: boolean }>("wa-dropdown")].some(
+  return [
+    ...surface.querySelectorAll<HTMLElement & { open?: boolean }>(
+      'wa-dropdown, [role="menu"][popover]',
+    ),
+  ].some(
     (dropdown) =>
-      dropdown.open === true &&
+      (dropdown.open === true ||
+        (dropdown.hasAttribute("popover") && dropdown.matches(":popover-open"))) &&
       !dropdown.closest("[inert]") &&
       (CHAT_DROPDOWN_KEYS.has(key) || keyboardShortcutTargetOwnsKey(dropdown, key)),
   );

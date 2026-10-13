@@ -88,6 +88,7 @@ export function ChatPermissionPicker(props: ChatPermissionPickerProps) {
         attributes: {
           "data-chat-permission-option": value,
           "data-chat-permission-shortcut": String(index + 1),
+          "data-shortcut": String(index + 1),
           title: locked ? t("chat.permissionControls.fullRequiresAdmin") : undefined,
         },
         icon: (

@@ -15,7 +15,7 @@ export type MenuItem = {
   href?: string;
   target?: JSX.AnchorHTMLAttributes<HTMLAnchorElement>["target"];
   rel?: string;
-  attributes?: JSX.HTMLAttributes<HTMLButtonElement> & {
+  attributes?: JSX.ButtonHTMLAttributes<HTMLButtonElement> & {
     [name: `data-${string}`]: string | number | boolean | undefined;
   };
   icon?: JSX.Element;

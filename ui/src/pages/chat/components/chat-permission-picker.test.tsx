@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
+import { focusChatComposerFromPrintableKeydown } from "../chat-pane-shared.ts";
 import { ChatPermissionPicker } from "./chat-permission-picker.tsx";
 
 it("keeps locked modes unavailable and selects enabled numeric shortcuts with return focus", async () => {
@@ -54,4 +55,39 @@ it("includes the documentation link in keyboard menu navigation", async () => {
     new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }),
   );
   await waitForSolid(() => expect(document.activeElement).toBe(link));
+});
+
+it("keeps declared shortcuts in the menu and forwards ordinary typing to the composer", async () => {
+  const onSelect = vi.fn();
+  const { container } = mountSolid(() => (
+    <>
+      <div class="agent-chat__composer-combobox">
+        <textarea />
+      </div>
+      <ChatPermissionPicker canSelectFull={false} mode="guarded" onSelect={onSelect} />
+    </>
+  ));
+  flush();
+  const redirect = (event: KeyboardEvent) =>
+    focusChatComposerFromPrintableKeydown(container, event);
+  document.addEventListener("keydown", redirect, true);
+  onTestFinished(() => document.removeEventListener("keydown", redirect, true));
+  const trigger = container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!;
+  const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+  container.querySelector("textarea")!.focus();
+  trigger.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
+  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  expect(document.activeElement).toBe(trigger);
+  trigger.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "4", bubbles: true, cancelable: true }),
+  );
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("workspace");
+  expect(document.activeElement).toBe(trigger);
+  trigger.click();
+  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  document.activeElement?.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }),
+  );
+  expect(document.activeElement).toBe(container.querySelector("textarea"));
+  expect(onSelect).toHaveBeenCalledTimes(1);
 });
