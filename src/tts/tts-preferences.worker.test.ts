@@ -15,6 +15,7 @@ import { shouldAttemptTtsPayload, shouldCleanTtsDirectiveText } from "./tts-conf
 import { prepareTtsPreferences } from "./tts-preferences.js";
 import {
   buildTtsSystemPromptHint,
+  buildTtsSystemPromptHintAsync,
   resolveTtsConfig,
   resolveTtsPrefsPath,
   resolveTtsPrefsPathAsync,
@@ -51,6 +52,9 @@ it("carries the worker-read path through delivery and prompt rendering without c
   const sql = observeMainThreadSql();
   sql.calibrate();
   try {
+    expect(await buildTtsSystemPromptHintAsync(cfg, "main", { messageToolOnly: true })).toContain(
+      "Use message(action=send) with voiceText",
+    );
     const preparedTtsPreferences = await prepareTtsPreferences();
     expect(await prepareTtsPreferences()).toEqual(preparedTtsPreferences);
     expect(reads).toHaveBeenCalledTimes(1);
@@ -72,6 +76,7 @@ it("carries the worker-read path through delivery and prompt rendering without c
     sql.clear();
     expect(shouldAttemptTtsPayload(input)).toBe(true);
     const next = await prepareTtsPreferences();
+    expect(await buildTtsSystemPromptHintAsync(cfg, "main")).toBeUndefined();
     expect(reads).toHaveBeenCalledTimes(1);
     expect(shouldAttemptTtsPayload({ cfg, preparedTtsPreferences: next })).toBe(false);
     expect(buildTtsSystemPromptHint(cfg, "main", { preparedTtsPreferences: next })).toBeUndefined();
@@ -109,7 +114,29 @@ it("carries missing machine state without creating a store or falling back to a 
     throw new Error("prepared absence must not invoke the synchronous SDK resolver");
   });
   const preparedTtsPreferences = await prepareTtsPreferences();
+  expect(await buildTtsSystemPromptHintAsync({})).toBeUndefined();
   expect(await resolveTtsPrefsPathAsync(resolveTtsConfig({}))).toBeTruthy();
   expect(shouldAttemptTtsPayload({ cfg: {}, preparedTtsPreferences })).toBe(false);
+  expect(existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
+});
+
+it("keeps legacy hints synchronous and warns once while explicit awaited hints skip machine state", async () => {
+  const root = tempDirs.make("openclaw-tts-hint-compat-");
+  const prefsPath = path.join(root, "prefs.json");
+  writeFileSync(prefsPath, JSON.stringify({ tts: { auto: "always", maxLength: 123 } }));
+  vi.stubEnv("OPENCLAW_STATE_DIR", root);
+  vi.stubEnv("OPENCLAW_TTS_PREFS", prefsPath);
+  setTtsMachinePrefsPathResolver(() => {
+    throw new Error("explicit preference paths must not consult machine state");
+  });
+  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+  expect(await buildTtsSystemPromptHintAsync({})).toContain("Keep spoken text ≤123 chars");
+  expect(warning).not.toHaveBeenCalled();
+  expect(buildTtsSystemPromptHint({})).toContain("Keep spoken text ≤123 chars");
+  expect(buildTtsSystemPromptHint({})).toContain("Keep spoken text ≤123 chars");
+  expect(warning).toHaveBeenCalledExactlyOnceWith(
+    expect.stringContaining("buildTtsSystemPromptHintAsync"),
+    { code: "DEP_PLUGIN_SDK", type: "DeprecationWarning" },
+  );
   expect(existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
 });

@@ -3,7 +3,7 @@ import { loadSessionEntryReadOnly } from "../../../config/sessions/session-acces
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { warnPluginSdkDeprecation } from "../../../plugins/sdk-deprecation.js";
 
-/** @deprecated Use resolveNativeSessionBindingWithAuthorityV2; removed in the next Plugin SDK major. */
+/** @deprecated Use resolveNativeSessionBindingWithAuthorityV2; removal follows a stable deprecation period. */
 export async function resolveNativeSessionBinding<TBinding>(
   params: Omit<NativeSessionGenerationParams, "target"> & {
     target?: NativeSessionGenerationTarget;
@@ -52,7 +52,7 @@ export async function resolveNativeSessionBinding<TBinding>(
   return { binding, assertCurrent };
 }
 
-/** @deprecated Use reclaimNativeSessionGenerationWithAuthority; removed in the next Plugin SDK major. */
+/** @deprecated Use reclaimNativeSessionGenerationWithAuthority; removal follows a stable deprecation period. */
 export async function reclaimNativeSessionGeneration(
   params: NativeSessionGenerationParams & {
     generation: NativeSessionGenerationOperations;
@@ -76,7 +76,7 @@ export async function reclaimNativeSessionGeneration(
   return reclaimPreparedGeneration(params, authority);
 }
 
-/** @deprecated Await prepareNativeSessionGenerationAuthority; removed in the next Plugin SDK major. */
+/** @deprecated Await prepareNativeSessionGenerationAuthority; removal follows a stable deprecation period. */
 export function captureNativeSessionGenerationAuthority(params: NativeSessionGenerationParams) {
   warnPluginSdkDeprecation({
     family: "native-session-binding",
@@ -143,7 +143,7 @@ export type NativeSessionGenerationReclaimPlan =
 
 export type NativeSessionGenerationAdoptionResult = "absent" | "current" | "adopted" | "conflict";
 
-/** @deprecated Use NativeSessionGenerationOperationsV2; removed in the next Plugin SDK major. */
+/** @deprecated Use NativeSessionGenerationOperationsV2; removal follows a stable deprecation period. */
 export type NativeSessionGenerationOperations = {
   prepareReclaim: () => Promise<NativeSessionGenerationReclaimPlan>;
   adopt: (
