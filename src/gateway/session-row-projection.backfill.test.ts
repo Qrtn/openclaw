@@ -297,7 +297,9 @@ it.each(["disposal", "replacement"] as const)(
   },
 );
 
-it("eventually fills legacy titles and previews without waiting during startup or changing activity", async () => {
+it("eventually fills legacy titles and previews without waiting during startup or changing activity", async ({
+  signal,
+}) => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = { agents: { entries: { main: {} } } };
     setRuntimeConfigSnapshot(cfg);
@@ -330,7 +332,7 @@ it("eventually fills legacy titles and previews without waiting during startup o
     try {
       expect(loadSessionEntry(target)?.displayName).toBeUndefined();
       release();
-      await backfilled;
+      await withinTest(backfilled, signal);
       expect(
         projection.snapshot(
           { agentId: "main", key: target.sessionKey },
