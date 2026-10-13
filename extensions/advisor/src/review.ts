@@ -18,7 +18,7 @@ If the problem IS demonstrated, fix the draft's omissions or unsafe wording rath
 ${APPROVE} only advice giving a strictly cheaper authorized next step that still completes the task. Repair the SAME problem only, using available inputs/configuration; include necessary cleanup, test updates and requested verification. Report a blocker only if no viable path remains.
 First line exactly ${APPROVE} or ${REJECT}. ${REJECT} has no body. With ${APPROVE}, give the final AGENT-DIRECTED correction, not a review of the draft or an answer to the user: name concrete transcript evidence AND what to do differently. Keep one focused correction under 80 words if possible, never over 120. No other decision tokens or code fence.`;
 
-class AdvisorOutputError extends Error {}
+export class AdvisorOutputError extends Error {}
 
 /** Returns only a structurally valid correction, or null when no change is needed. */
 export function parseReviewOutput(text: string): string | null {
@@ -42,12 +42,7 @@ function parseAdvisorDecision(text: string, accepted: string, rejected: string):
   if (decision !== accepted && decision !== rejected) {
     throw new AdvisorOutputError("Reviewer returned an invalid decision header");
   }
-  if (
-    lines.some((line) => {
-      const token = line.trim();
-      return token === NO_CHANGE || token === CORRECTION || token === APPROVE || token === REJECT;
-    })
-  ) {
+  if (lines.some((line) => /\b(?:NO_CHANGE|CORRECTION|APPROVE|REJECT)\b/u.test(line))) {
     throw new AdvisorOutputError("Reviewer returned multiple decision headers");
   }
   if (decision === rejected) {

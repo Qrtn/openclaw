@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AdvisorOutputError } from "./review.js";
 
 export type AdvisorSchedule = {
   /** Tool calls started between reviews, including ones still running; 0 turns this trigger off. */
@@ -61,6 +62,9 @@ export function createAdvisorController(deps: AdvisorDeps) {
   }
 
   function resetInterval(state: SessionState) {
+    if (state.run) {
+      accountTime(state, Date.now() - state.run.startedAt);
+    }
     state.toolCalls = 0;
     state.activeMs = 0;
   }
@@ -94,9 +98,15 @@ export function createAdvisorController(deps: AdvisorDeps) {
       }
       // Provider failures wait a full interval instead of retrying after every tool call.
       resetInterval(state);
-      deps.logger.warn(
-        `advisor: review failed for session ${sessionKey}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const reason =
+        error instanceof AdvisorOutputError
+          ? error.message
+          : error instanceof Error && error.name === "TimeoutError"
+            ? "timeout"
+            : error instanceof Error && error.name === "AbortError"
+              ? "cancelled"
+              : "fork_failed";
+      deps.logger.warn(`advisor: review failed for session ${sessionKey}: ${reason}`);
     } finally {
       if (state.inFlight === controller) {
         state.inFlight = undefined;

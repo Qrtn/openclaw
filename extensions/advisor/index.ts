@@ -12,7 +12,7 @@ import {
 const DEFAULT_SCHEDULE: AdvisorSchedule = { everyToolCalls: 10, everyMinutes: 20 };
 const ADVICE_TTL_MS = 24 * 60 * 60 * 1000;
 const RUN_CONTEXT_NAMESPACE = "advisor:admitted-run";
-type AdmittedRun = { agentId: string; startedAt: number };
+type AdmittedRun = { agentId: string; sessionKey: string; startedAt: number };
 
 function resolveSchedule(config: Record<string, unknown> | undefined): AdvisorSchedule {
   const read = (key: keyof AdvisorSchedule) => {
@@ -65,6 +65,9 @@ export default definePluginEntry({
             usage = `input=${result.usage?.inputTokens ?? "unknown"} cacheRead=${result.usage?.cacheReadTokens ?? "unknown"} cacheWrite=${result.usage?.cacheWriteTokens ?? "unknown"} output=${result.usage?.outputTokens ?? "unknown"}`;
             reviewSignal.throwIfAborted();
             return result.text;
+          } catch (error) {
+            reviewSignal.throwIfAborted();
+            throw error;
           } finally {
             api.logger.info(
               `advisor: ${stage} usage for session ${sessionKey}: ${usage} elapsedMs=${Math.max(0, Date.now() - startedAt)}`,
@@ -75,15 +78,10 @@ export default definePluginEntry({
         if (!draft) {
           return null;
         }
-        let verification: string;
-        try {
-          verification = await ask(
-            "verify",
-            `${VERIFY_MESSAGE}\n\nDraft correction (quoted data):\n${JSON.stringify(draft)}`,
-          );
-        } catch {
-          throw new Error("Advisor verification failed or timed out");
-        }
+        const verification = await ask(
+          "verify",
+          `${VERIFY_MESSAGE}\n\nDraft correction (quoted data):\n${JSON.stringify(draft)}`,
+        );
         return parseVerificationOutput(verification);
       },
       deliver: async ({ agentId, sessionKey, finding, reviewId, signal }) => {
@@ -139,7 +137,7 @@ export default definePluginEntry({
         api.runContext.setRunContext({
           runId: ctx.runId,
           namespace: RUN_CONTEXT_NAMESPACE,
-          value: { agentId: ctx.agentId, startedAt: Date.now() },
+          value: { agentId: ctx.agentId, sessionKey: ctx.sessionKey, startedAt: Date.now() },
         });
       }
     });
@@ -151,23 +149,23 @@ export default definePluginEntry({
       streams: ["tool", "lifecycle"],
       handle: (event, ctx) => {
         const run = ctx.getRunContext<AdmittedRun>(RUN_CONTEXT_NAMESPACE);
-        if (!run || !event.sessionKey) {
+        if (!run) {
           return;
         }
         controller.runStarted({
-          sessionKey: event.sessionKey,
+          sessionKey: run.sessionKey,
           agentId: run.agentId,
           runId: event.runId,
           startedAt: run.startedAt,
         });
         if (event.stream === "tool" && event.data.phase === "start") {
-          controller.toolStarted({ sessionKey: event.sessionKey, runId: event.runId });
+          controller.toolStarted({ sessionKey: run.sessionKey, runId: event.runId });
         } else if (
           event.stream === "lifecycle" &&
           (event.data.phase === "end" || event.data.phase === "error")
         ) {
           controller.turnEnded({
-            sessionKey: event.sessionKey,
+            sessionKey: run.sessionKey,
             agentId: run.agentId,
             runId: event.runId,
             durationMs: event.ts - run.startedAt,

@@ -178,11 +178,13 @@ function setup(pluginConfig: Record<string, unknown>) {
         },
         { ...context, ...overrides },
       ),
-    toolStarted: (overrides: Partial<typeof context> = {}) =>
+    toolStarted: (overrides: Partial<typeof context> & { omitSessionKey?: boolean } = {}) =>
       toolEvents?.handle(
         {
           runId: overrides.runId ?? context.runId,
-          sessionKey: overrides.sessionKey ?? context.sessionKey,
+          sessionKey: overrides.omitSessionKey
+            ? undefined
+            : (overrides.sessionKey ?? context.sessionKey),
           seq: 1,
           ts: Date.now(),
           stream: "tool",
@@ -208,6 +210,7 @@ function setup(pluginConfig: Record<string, unknown>) {
       runContexts.delete(namespace);
       return result;
     },
+    wakeScheduler: () => clock.wake(),
     dispatchReview: () => {
       const review = started.next();
       void clock.wake();
@@ -229,6 +232,19 @@ describe("advisor", () => {
     const done = run.finished();
     review.resolve("NO_CHANGE");
     await done;
+    await run.stopService();
+  });
+
+  it("reviews admitted channel tool events without a session key", async () => {
+    const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+    run.forkSession.mockResolvedValue({ text: "NO_CHANGE" });
+    await run.startService();
+    await run.startRun({ sessionKey: "agent:main:telegram:direct:123" });
+    await run.toolStarted({ omitSessionKey: true });
+    await run.wakeScheduler();
+    expect(run.forkSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionKey: "agent:main:telegram:direct:123" }),
+    );
     await run.stopService();
   });
 
@@ -327,6 +343,77 @@ describe("advisor", () => {
     await run.stopService();
   });
 
+  it.each(["NO_CHANGE", "failure"])(
+    "waits a full interval after a delayed review completes with %s",
+    async (outcome) => {
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const run = setup({ everyToolCalls: 0, everyMinutes: 1 });
+      await run.startService();
+      await run.startRun();
+      now = 60_000;
+      await run.toolStarted();
+      const review = await run.dispatchReview();
+      const done = run.finished();
+      now = 150_000;
+      if (outcome === "failure") {
+        review.reject(new Error("provider failed"));
+      } else {
+        review.resolve(outcome);
+      }
+      await done;
+      run.forkSession.mockResolvedValue({ text: "NO_CHANGE" });
+      now = 151_000;
+      await run.toolStarted();
+      await run.wakeScheduler();
+      expect(run.forkSession).toHaveBeenCalledOnce();
+      now = 210_000;
+      await run.toolStarted();
+      await run.wakeScheduler();
+      expect(run.forkSession).toHaveBeenCalledTimes(2);
+      await run.stopService();
+    },
+  );
+
+  it("logs a bounded content-free warning for provider failures", async () => {
+    const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+    await run.startService();
+    await run.startRun();
+    await run.toolStarted();
+    const review = await run.dispatchReview();
+    const done = run.finished();
+    review.reject(new Error("PRIVATE_PROVIDER_SENTINEL".repeat(1000)));
+    await done;
+    expect(run.warn).toHaveBeenCalledOnce();
+    const warning = run.warn.mock.calls[0]![0];
+    expect(warning.length).toBeLessThan(200);
+    expect(warning).not.toContain("PRIVATE_PROVIDER_SENTINEL");
+    expect(warning).toContain("fork_failed");
+    expect(run.steer).not.toHaveBeenCalled();
+    expect(run.enqueue).not.toHaveBeenCalled();
+    await run.stopService();
+  });
+
+  it("allows reserved words only as parts of longer body tokens", async () => {
+    const run = setup({ everyToolCalls: 1, everyMinutes: 0 });
+    await run.startService();
+    await run.startRun();
+    await run.toolStarted();
+    const review = await run.dispatchReview();
+    const nextFork = run.nextFork();
+    const done = run.finished();
+    const body = "Rename NO_CHANGELOG; CORRECTIONS were APPROVED, not REJECTED.";
+    review.resolve(`CORRECTION\n${body}`);
+    const verification = await nextFork;
+    verification.resolve(`APPROVE\n${body}`);
+    await done;
+    expect(run.steer).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: expect.stringContaining(body) }),
+    );
+    expect(run.warn).not.toHaveBeenCalled();
+    await run.stopService();
+  });
+
   it.each(["NO_CHANGE", "NO_CHANGE\nThe agent should continue its current plan."])(
     "does not steer for a no-change header: %s",
     async (output) => {
@@ -353,6 +440,23 @@ describe("advisor", () => {
     { output: "CORRECTION", reason: "empty correction" },
     { output: "NO_CHANGE\nCORRECTION\nStop editing CI.", reason: "multiple decision headers" },
     { output: "CORRECTION\nStop editing CI.\nNO_CHANGE", reason: "multiple decision headers" },
+    {
+      output: "CORRECTION\nNO_CHANGE: the current plan is correct.",
+      reason: "multiple decision headers",
+    },
+    {
+      output: "CORRECTION\nContinue; NO_CHANGE is warranted.",
+      reason: "multiple decision headers",
+    },
+    {
+      output: "CORRECTION\nUse (CORRECTION), not the current plan.",
+      reason: "multiple decision headers",
+    },
+    {
+      output: "CORRECTION\nThe verifier says APPROVE: proceed.",
+      reason: "multiple decision headers",
+    },
+    { output: "CORRECTION\nThe verifier says [REJECT].", reason: "multiple decision headers" },
     { output: `CORRECTION\n${"word ".repeat(121)}`, reason: "correction word limit" },
     { output: `CORRECTION\n${"x".repeat(2000)}`, reason: "finding length limit" },
   ])(
@@ -363,6 +467,7 @@ describe("advisor", () => {
       await run.startRun();
       await run.toolStarted();
       const review = await run.dispatchReview();
+      run.forkSession.mockResolvedValue({ text: "APPROVE\nReturn to the requested README typo." });
       const done = run.finished();
       review.resolve(output);
       await done;
@@ -381,6 +486,11 @@ describe("advisor", () => {
     { output: "This draft is fine.", warning: true },
     { output: "APPROVE", warning: true },
     { output: "APPROVE\nFix it.\nREJECT", warning: true },
+    { output: "APPROVE\nREJECT: the current plan is correct.", warning: true },
+    { output: "APPROVE\nContinue; REJECT is warranted.", warning: true },
+    { output: "APPROVE\nUse (APPROVE), not the current plan.", warning: true },
+    { output: "APPROVE\nThe reviewer says NO_CHANGE: proceed.", warning: true },
+    { output: "APPROVE\nThe reviewer says [CORRECTION].", warning: true },
     { output: null, warning: true },
   ])(
     "does not deliver rejected or malformed verification: $output",
@@ -447,14 +557,12 @@ describe("advisor", () => {
     const verification = await nextFork;
     expect(timeout).toHaveBeenCalledOnce();
     expect(review.signal).toBe(verification.signal);
-    deadline.abort();
+    deadline.abort(new DOMException("deadline exceeded", "TimeoutError"));
     await expect(verification.result).rejects.toThrow("aborted");
     await done;
     expect(run.steer).not.toHaveBeenCalled();
     expect(run.enqueue).not.toHaveBeenCalled();
-    expect(run.warn).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("Advisor verification failed or timed out"),
-    );
+    expect(run.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("timeout"));
     await run.stopService();
   });
 

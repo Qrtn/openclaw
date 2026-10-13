@@ -15,8 +15,10 @@ Review replies must start with `NO_CHANGE` or `CORRECTION` on its own line.
 correction is checked against the same session by a verifier, which replies
 `APPROVE` with the final advice or `REJECT`. Only the approved body is delivered.
 Both steps share a 120-second deadline. Advice is limited to 120 words and each
-reply to 2,000 characters. Malformed replies, verification errors, and timeouts
-never steer; failures log one bounded warning.
+reply to 2,000 characters. Reserved decision words are not allowed as whole tokens
+anywhere in either reply's body, including inline or next to punctuation.
+Malformed replies, verification errors, and timeouts never steer; parser failures
+log a bounded reason, and other failures log only a fixed category.
 
 Enable it in **Settings → Agents & Tools → Labs → Advisor**. Its **Configure**
 button opens the plugin's settings page. Or use config:
@@ -35,10 +37,11 @@ button opens the plugin's settings page. Or use config:
 ```
 
 `everyToolCalls` counts tool calls as they start, including commands that are
-still running in the background. `everyMinutes` counts accumulated agent run
-time, including model work before the first tool call, checked as tools start
-and when a run ends. Either trigger starts a review; `0` disables a trigger.
-Both counters restart after a review.
+still running in the background and calls from channel-originated user runs.
+`everyMinutes` counts accumulated agent run time, including model work before the
+first tool call, checked as tools start and when a run ends. Either trigger starts
+a review; `0` disables a trigger. Both counters restart when a review completes,
+including a failed review, so the next review waits a full interval.
 Heartbeat, cron, memory-flush, overflow, and side-question runs do not count.
 
 Reviews keep the session's model and context; there is no separate model setting.
