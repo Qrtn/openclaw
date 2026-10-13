@@ -490,16 +490,19 @@ export const usageHandlers: GatewayRequestHandlers = {
       }
       throw err;
     }
-    const sourcesByKey = new Map(
-      result.sources.map((entry) => [JSON.stringify([entry.agentId, entry.key]), entry]),
+    const sourcesByAgent = new Map(
+      [...Map.groupBy(result.sources, (source) => source.agentId)].map(([agentId, sources]) => [
+        agentId,
+        new Map(sources.map((source) => [source.key, source])),
+      ]),
     );
     const contextReads = new Map<
       UsageSessionSelection,
       Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined
     >();
     const hydratedSources = new Set<UsageSessionSelection>();
-    const sourceFor = (session: SessionUsageEntry) =>
-      sourcesByKey.get(JSON.stringify([session.agentId, session.key]));
+    const sourceFor = ({ agentId, key }: SessionUsageEntry) =>
+      agentId === undefined ? undefined : sourcesByAgent.get(agentId)?.get(key);
     const committedEntry = (source: UsageSessionSelection) =>
       source.contextTarget && !source.storeEntry?.incognito
         ? getSessionRowProjection(context)?.readCapabilityEntry({
@@ -521,21 +524,19 @@ export const usageHandlers: GatewayRequestHandlers = {
             !source ||
             !session.agentId ||
             contextReads.has(source) ||
-            committedEntry(source) !== undefined ||
-            (!session.hasContextWeight && snapshotIsCurrent())
+            (!session.hasContextWeight && snapshotIsCurrent()) ||
+            committedEntry(source) !== undefined
           ) {
             continue;
           }
           contextReads.set(source, undefined);
           try {
-            contextReads.set(
-              source,
-              await prepareSessionMutationFacts({
-                cfg: context.getRuntimeConfig(),
-                sessionKey: session.key,
-                agentId: session.agentId,
-              }),
-            );
+            const prepared = await prepareSessionMutationFacts({
+              cfg: context.getRuntimeConfig(),
+              sessionKey: session.key,
+              agentId: session.agentId,
+            });
+            contextReads.set(source, prepared);
           } catch (error) {
             if (!(error instanceof SessionMutationFactsUnavailableError)) {
               throw error;
@@ -640,9 +641,7 @@ export const usageHandlers: GatewayRequestHandlers = {
       const selected = visible.filter((row) => !creatorKey || row.creatorKey === creatorKey);
       const accumulator = createUsageAggregateAccumulator();
       if (!overviewOptions) {
-        for (const row of selected) {
-          accumulator.add(row);
-        }
+        selected.forEach((row) => accumulator.add(row));
       }
       const slice = overviewOptions
         ? buildUsageOverview({
