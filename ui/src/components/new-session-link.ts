@@ -13,8 +13,8 @@ import { newSessionSearch, type NewSessionTarget } from "../pages/new-session/lo
 import { icons } from "./icons.ts";
 import type { AgentIdentity } from "./identity-avatar-view.ts";
 import { renderShortcutHint } from "./kbd.ts";
+import "./solid/new-session-link.tsx";
 import "./tooltip.ts";
-import "./new-session-link.solid.tsx";
 
 export function renderNewSessionLink(params: {
   basePath: string;

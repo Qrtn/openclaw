@@ -313,7 +313,7 @@ export function Menu(props: BranchProps): JSX.Element {
             return (
               <Show when={actionable()} fallback={content()}>
                 {(item) => {
-                  const Item = dynamic(() => (item().href ? "a" : "button"));
+                  const Item = dynamic(() => (item().href === undefined ? "button" : "a"));
                   return (
                     <Show
                       when={item().children}
@@ -327,7 +327,7 @@ export function Menu(props: BranchProps): JSX.Element {
                             item().checked,
                             item().label,
                           )}
-                          type={item().href ? undefined : "button"}
+                          type={item().href === undefined ? "button" : undefined}
                           href={item().disabled ? undefined : item().href}
                           class={["oc-menu-item", item().class]}
                           data-value={item().id}
@@ -338,7 +338,7 @@ export function Menu(props: BranchProps): JSX.Element {
                             item().type ? (item().checked ? "true" : "false") : undefined
                           }
                           aria-disabled={item().disabled ? "true" : undefined}
-                          disabled={item().href ? undefined : item().disabled}
+                          disabled={item().href === undefined ? item().disabled : undefined}
                         >
                           <Show when={item().type}>
                             <span class="oc-menu-item__check" aria-hidden="true">

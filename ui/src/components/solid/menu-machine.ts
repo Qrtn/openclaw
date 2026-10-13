@@ -216,10 +216,6 @@ export function useMenuMachine(
     loopFocus: true,
     closeOnSelect: false,
     "aria-label": overlay.id,
-    // Zag's synthetic link event is not cancelable; use native activation for app navigation.
-    navigate({ node }) {
-      queueMicrotask(() => node.click());
-    },
     onOpenChange({ open }) {
       const restore = !open && containsComposed(overlay.surface, service.scope.getActiveElement());
       // Native sibling dismissal must not leave focus behind in the retired branch.
@@ -238,6 +234,8 @@ export function useMenuMachine(
       }
     },
     onSelect: ({ value }) => onSelect(value),
+    // Zag's default link click is not cancelable; native click keeps selection vetoable.
+    navigate: ({ node }) => queueMicrotask(() => node.click()),
   };
   const service = new VanillaMachine(adapted, props);
   createEffect(direction, (dir) => service.updateProps({ ...props, dir, open: overlay.open }));
@@ -384,12 +382,21 @@ export function useMenuMachine(
         ...result,
         onClick: (event: MouseEvent) => {
           if (event.currentTarget instanceof HTMLAnchorElement) {
+            if (disabled) {
+              event.preventDefault();
+              return;
+            }
             if (!shouldHandleNavigationClick(event)) {
               return;
             }
             event.preventDefault();
           }
           result.onClick?.(event);
+        },
+        onContextMenu: (event: MouseEvent) => {
+          if (event.currentTarget instanceof HTMLAnchorElement) {
+            event.stopPropagation();
+          }
         },
         onPointerMove: (event: PointerEvent) => {
           if (event.movementX === 0 && event.movementY === 0) {
