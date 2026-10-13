@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { stageInstalledPackage, stagePackage } from "./stage-package.mjs";
 
@@ -79,3 +80,31 @@ test("exact release builds leave runtime resources unchanged without building or
   assert.deepEqual(fs.readdirSync(work), ["manifest.json"]);
   assert.deepEqual(read(work, "manifest.json"), { files: { "bin/bun": "original" } });
 });
+
+for (const platform of ["linux", "windows"]) {
+  test(`tagless ${platform} release builds preserve Bun-only resources`, (t) => {
+    // openclaw-temp-dir: allow exercises release staging through a shallow Git checkout
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tauri-release-identity-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const origin = path.join(root, "origin");
+    execFileSync("git", ["init", "--quiet", origin]);
+    write(origin, "package.json", { version: "2026.10.2" });
+    execFileSync("git", ["-C", origin, "add", "."]);
+    execFileSync("git", ["-C", origin, "-c", "user.name=Fixture", "-c",
+      "user.email=fixture@example.invalid", "commit", "-qm", "release"]);
+    execFileSync("git", ["-C", origin, "tag", "v2026.10.2"]);
+    const clone = path.join(root, "clone");
+    execFileSync("git", ["clone", "--quiet", "--depth=1", "--no-tags", pathToFileURL(origin).href, clone]);
+    assert.equal(execFileSync("git", ["-C", clone, "tag", "--list"], { encoding: "utf8" }), "");
+    const source = execFileSync("git", ["-C", clone, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const work = path.join(root, "resources");
+    write(work, "manifest.json", { files: { "bin/bun": "original" } });
+    execFileSync(process.execPath, ["--input-type=module", "--eval",
+      "const { stagePackage } = await import(process.argv[1]); stagePackage(process.argv[2], process.argv[3], { platform: process.argv[4], arch: 'x64' });",
+      new URL("./stage-package.mjs", import.meta.url).href, clone, work, platform], {
+      env: { ...process.env, RELEASE_TAG: "v2026.10.2", RELEASE_SHA: source },
+    });
+    assert.deepEqual(fs.readdirSync(work), ["manifest.json"]);
+    assert.deepEqual(read(work, "manifest.json"), { files: { "bin/bun": "original" } });
+  });
+}

@@ -113,6 +113,10 @@ Local setup seeds the private Windows Bun runtime and delegates service
 installation and health checks to `openclaw gateway`. Non-release builds install
 the core CLI and Codex staged from the same source commit; release builds install
 the matching published CLI with Bun. System Node.js and npm are not required.
+Release jobs pass `RELEASE_TAG` and its verified `RELEASE_SHA`, so shallow checkouts
+without tag refs still omit the source package. Staging rejects a release identity
+that disagrees with the package version or source commit. Local builds without an
+explicit release identity continue to use exact tag refs.
 The managed launcher is `%USERPROFILE%\.openclaw\bin\openclaw.cmd`; app actions
 execute Bun directly, without interpreting arguments in a command shell.
 `OPENCLAW_DESKTOP_CLI` can select an existing development CLI.

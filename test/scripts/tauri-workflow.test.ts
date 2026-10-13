@@ -2,6 +2,19 @@ import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { parse } from "yaml";
 
+it.each(["build_linux", "build_windows", "build_macos"])(
+  "passes the verified release identity to %s despite tagless checkout",
+  (job) => {
+    const workflow = parse(readFileSync(".github/workflows/linux-app-release.yml", "utf8"));
+    const steps = workflow.jobs[job].steps;
+    const build = steps.find((step: { run?: string }) => step.run?.includes("@tauri-apps/cli"));
+    expect(build.env).toMatchObject({
+      RELEASE_TAG: "${{ needs.validate_release.outputs.release_tag }}",
+      RELEASE_SHA: "${{ needs.validate_release.outputs.tag_sha }}",
+    });
+  },
+);
+
 it("budgets Windows source packaging within the desktop job", () => {
   const workflow = parse(readFileSync(".github/workflows/linux-app.yml", "utf8"));
   const windows = workflow.jobs["test-windows-power"];

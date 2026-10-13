@@ -9,8 +9,38 @@ const MAX_PLUGIN_BYTES = 300 * 1024 * 1024;
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const git = (root, args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 
+function requireReleaseTagCommit(root, tag, commit, verifiedCommit) {
+  let actual = verifiedCommit;
+  if (actual === undefined) {
+    const ref = `refs/tags/${tag}`;
+    try {
+      actual = git(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    } catch {
+      git(root, ["fetch", "--depth=1", "--no-tags", "origin", `${ref}:${ref}`]);
+      actual = git(root, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    }
+  }
+  if (actual !== commit) {
+    throw new Error(`Release tag ${tag} commit ${actual} does not match source commit ${commit}.`);
+  }
+}
+
 /** Use the publication owner's tag/version identity, including same-source corrections. */
 export function desktopRuntimeReleaseTag(root, version, commit) {
+  // Release jobs check out a verified SHA without necessarily fetching tags.
+  const releaseTag = process.env.RELEASE_TAG;
+  const releaseSha = process.env.RELEASE_SHA;
+  if (releaseTag !== undefined || releaseSha !== undefined) {
+    if (!releaseTag) {
+      throw new Error("Explicit desktop release identity requires RELEASE_TAG.");
+    }
+    const { baseTag } = resolveReleaseTagPackageIdentity(releaseTag, version);
+    requireReleaseTagCommit(root, releaseTag, commit, releaseSha);
+    if (baseTag) {
+      requireReleaseTagCommit(root, baseTag, commit);
+    }
+    return releaseTag;
+  }
   const tags = git(root, ["tag", "--points-at", commit]).split("\n").filter(Boolean);
   for (const tag of tags) {
     let identity;
