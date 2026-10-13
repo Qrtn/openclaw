@@ -27,7 +27,6 @@ export function installControlUiPaneRuntimeTestAdapter() {
       "catalogMessages",
       "loadingOlder",
       "historyIntentTimer",
-      "sessionSnapshotStore",
       "presencePayload",
       "boardProviderLease",
     ] as const) {

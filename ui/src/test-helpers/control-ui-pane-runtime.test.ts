@@ -25,6 +25,15 @@ it("keeps private pane probes on the reported runtime while composing stream ins
   expect(scope.openclawRenderLifecycleTestHook).toBe(adapter);
   const fixture = createTestChatPane({ client: createTestGatewayClient(() => ({})) });
   const element = window.document.createElement("openclaw-chat-pane");
+  let snapshots = new SessionSnapshotStore();
+  const snapshotProperty = {
+    configurable: true,
+    get: () => snapshots,
+    set: (next: SessionSnapshotStore) => {
+      snapshots = next;
+    },
+  };
+  Object.defineProperty(element, "sessionSnapshotStore", snapshotProperty);
   const commitFence = Promise.resolve();
   Reflect.set(element, "updateComplete", commitFence);
   const runtime = new ChatPaneRuntime(element, fixture.pane.context);
@@ -43,17 +52,20 @@ it("keeps private pane probes on the reported runtime while composing stream ins
   expect(Reflect.get(element, "presencePayload")).toBeUndefined();
   expect(firstProbe).toHaveBeenCalledWith(runtime, "commit");
   expect(Reflect.get(element, "updateComplete")).toBe(commitFence);
+  expect(Object.getOwnPropertyDescriptor(element, "sessionSnapshotStore")).toMatchObject(
+    snapshotProperty,
+  );
+  const nextSnapshots = new SessionSnapshotStore();
+  expect(Reflect.set(element, "sessionSnapshotStore", nextSnapshots)).toBe(true);
+  expect(Reflect.get(element, "sessionSnapshotStore")).toBe(nextSnapshots);
 
   const suggestions: [] = [];
-  const snapshots = new SessionSnapshotStore();
   Reflect.set(runtime, "taskSuggestions", suggestions);
-  Reflect.set(runtime, "sessionSnapshotStore", snapshots);
   Reflect.set(runtime, "loadingOlder", true);
   Reflect.set(runtime, "historyIntentTimer", 37);
   const presence = { presence: [] };
   Reflect.set(runtime, "presencePayload", presence);
   expect(Reflect.get(element, "taskSuggestions")).toBe(suggestions);
-  expect(Reflect.get(element, "sessionSnapshotStore")).toBe(snapshots);
   expect(Reflect.get(element, "loadingOlder")).toBe(true);
   expect(Reflect.get(element, "historyIntentTimer")).toBe(37);
   expect(Reflect.get(element, "presencePayload")).toBe(presence);
