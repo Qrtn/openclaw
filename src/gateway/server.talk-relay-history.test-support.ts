@@ -69,6 +69,7 @@ export async function runTalkRelayCloseHistory({
     await releaseModel.promise;
     params.abortSignal?.throwIfAborted();
     const assistant = makeAgentAssistantMessage({ content: [{ type: "text", text: modelAnswer }] });
+    assistant.usage = { ...assistant.usage, input: 10, totalTokens: 10 };
     guardSessionManager(SessionManager.open(scope()), {
       agentId: params.agentId,
       sessionKey: params.sessionKey,
@@ -173,12 +174,12 @@ export async function runTalkRelayCloseHistory({
     releaseModel.resolve();
     await waitForDispatchEnd();
     await drainPublications();
-    const expectedAnswers = disposition === "detach" ? [answer] : [];
+    const expectedAnswers = spokenReplacement ? [spokenAnswer] : [];
+    if (disposition === "detach") {
+      expectedAnswers.push(answer);
+    }
     if (pendingFollowUp) {
       expectedAnswers.push(followUpAnswer);
-    }
-    if (spokenReplacement) {
-      expectedAnswers.push(spokenAnswer);
     }
     expect(
       (await historyMessages())
@@ -201,6 +202,8 @@ export async function runTalkRelayCloseHistory({
       if (afterFinal) {
         expect(stored[0]?.display).toBe(false);
         expect(stored[1]?.excludeFromContext).toBe(true);
+        expect(stored[0]?.usage).toMatchObject({ input: 10, totalTokens: 10 });
+        expect(stored[1]?.usage).toBeUndefined();
       }
     }
   } finally {

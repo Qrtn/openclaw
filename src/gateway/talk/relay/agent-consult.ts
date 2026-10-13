@@ -165,7 +165,12 @@ export function createRelayAgentRunRegistration(
               messages: [
                 {
                   eventId,
-                  message: { ...answer, idempotencyKey: eventId, excludeFromContext: true },
+                  message: {
+                    ...answer,
+                    usage: undefined,
+                    idempotencyKey: eventId,
+                    excludeFromContext: true,
+                  },
                 },
               ],
             });
