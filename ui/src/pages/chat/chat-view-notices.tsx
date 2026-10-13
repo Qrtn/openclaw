@@ -4,6 +4,7 @@ import type {
   SessionPlacementDiskSpace,
   SessionPlacementWorkerRuntimeInstall,
 } from "../../../../packages/gateway-protocol/src/schema/session-placement.ts";
+import { readRunFailureNotice } from "../../../../src/shared/run-failure-notice.js";
 import type { ApplicationPlacementStartupStatus } from "../../app/session-placement-startup.ts";
 import { formatWebUiIconErrorText } from "../../components/error-presentation.ts";
 import { CopyButton } from "../../components/solid/copy-button.tsx";
@@ -206,6 +207,13 @@ export function renderChatTopbarNotices(props: ChatViewNoticesProps) {
 }
 
 export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
+  const hasTranscriptFailure = () =>
+    Boolean(
+      props.runError?.runId &&
+      props.messages.some(
+        (message) => readRunFailureNotice(message)?.runId === props.runError?.runId,
+      ),
+    );
   const contention = () => props.runError?.kind === "state_contention";
   const refresh = (
     <Show when={props.onRefresh}>
@@ -239,7 +247,7 @@ export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
         )}
       </Show>
       {renderProviderPolicyNotice(props.providerPolicyNotice)}
-      <Show when={props.runError}>
+      <Show when={!hasTranscriptFailure() && props.runError}>
         {(error) => (
           <>
             <ChatErrorNotice

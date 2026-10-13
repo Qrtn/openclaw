@@ -41,6 +41,7 @@ import type { ChatTaskSuggestionTrayProps } from "./components/chat-task-suggest
 import { getTranscriptState, type ChatThreadProps } from "./components/chat-thread-interactions.ts";
 import type { ChatTranscriptController } from "./components/chat-transcript-controller.ts";
 import { selectChatInputDisplay } from "./history-merge.ts";
+import { chatFailureRunId } from "./run-lifecycle.ts";
 import type { ProviderPolicyNotice } from "./tool-stream-contract.ts";
 import type { WorkspaceResultConflict } from "./workspace-conflict.ts";
 export type ChatProps = Omit<
@@ -49,6 +50,8 @@ export type ChatProps = Omit<
   | "runActive"
   | "runWorking"
   | "startupLabel"
+  | "retryAt"
+  | "failureActionsRunId"
   | "questionPrompts"
   | "agents"
   | "queuedMessageAction"
@@ -231,6 +234,8 @@ export function createChatViewFrame(props: ChatProps) {
     runActive: props.runActive === true,
     runWorking,
     startupLabel: chatStartupStatusLabel(props.startupStatus, placementStartup),
+    retryAt: props.startupStatus?.phase === "retrying" ? props.startupStatus.retryAt : undefined,
+    failureActionsRunId: chatFailureRunId(props.runError, props.selectedSession),
     questionPrompts: props.gatewayQuestionPrompts,
     agents: props.agentsList?.agents,
     onOpenImage: openImage,
