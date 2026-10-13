@@ -123,9 +123,18 @@ Lightning or Nemotron 3 Super when you want a smaller Nemotron option, or
 choose one of the third-party models
 hosted in NVIDIA's catalog when their context, latency, or behavior fits better.
 
-## Models
+## Nemotron 3.5 Super VL
 
-- NVIDIA Nemotron 3.5 Super VL
+Nemotron 3.5 Super VL is NVIDIA's vision-language model for text-and-image tasks.
+NVIDIA's [model documentation](https://docs.nvidia.com/nemo/automodel/model-coverage/omni/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)
+describes a hybrid Mamba-2 and Attention mixture-of-experts language backbone
+paired with a RADIO v2.5-H vision encoder. The documented BF16 checkpoint has
+121B total parameters and no audio encoder.
+
+Choose Super VL for workflows that need image understanding alongside text.
+NVIDIA's NeMo AutoModel guide includes a fine-tuning recipe for extracting
+structured fields from receipt images. Nemotron 3 Ultra remains the default
+NVIDIA model in OpenClaw.
 
 ## Bundled fallback catalog
 
