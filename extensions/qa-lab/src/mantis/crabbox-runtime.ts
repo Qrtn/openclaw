@@ -129,7 +129,9 @@ export async function defaultCommandRunner(
         const id = match[1] ?? match[2];
         if (id && !recoveryLeaseCandidates.includes(id)) {
           recoveryLeaseCandidates.push(id);
-          if (recoveryLeaseCandidates.length > 8) recoveryLeaseCandidates.shift();
+          if (recoveryLeaseCandidates.length > 8) {
+            recoveryLeaseCandidates.shift();
+          }
         }
       }
       commandFailureDiagnostics.set(error, {
