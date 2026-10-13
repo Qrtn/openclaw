@@ -13,6 +13,7 @@ import {
   parseNodeWorkerWorkspaceExecResult,
 } from "../worker/node-workspace-protocol.js";
 import type { NodeWorkerSupervisorTransport } from "./node-registry-private.js";
+import { resolveSessionCreateInitialTurn } from "./server-methods/session-create-initial-turn.js";
 
 export function validateSessionDeviceFolderSelection(
   params: SessionsCreateParams,
@@ -42,6 +43,13 @@ export function validateSessionDeviceFolderSelection(
     return errorShape(
       ErrorCodes.INVALID_REQUEST,
       "sessions.create deviceFolder requires a device and path",
+    );
+  }
+  // The folder exists only after explicit dispatch; an inline turn would run before placement.
+  if (resolveSessionCreateInitialTurn(params)?.hasInitialTurn !== false) {
+    return errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      "sessions.create deviceFolder cannot include an initial turn; dispatch the session with sessions.dispatch, then send the message with sessions.send.",
     );
   }
   return undefined;

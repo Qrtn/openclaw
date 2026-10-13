@@ -164,6 +164,13 @@ test.each([
   { execNode: "other" },
   { catalogId: "catalog" },
   { fork: true, parentSessionKey: "agent:main:main", worktree: true },
+  { message: "List the files" },
+  { task: "List the files" },
+  {
+    attachments: [
+      { type: "file", mimeType: "text/plain", fileName: "note.txt", content: "bm90ZQ==" },
+    ],
+  },
 ])(
   "sessions.create rejects conflicting device folder selection %j before node I/O",
   async (conflict) => {
