@@ -573,7 +573,7 @@ describe("SQLite historical session disk budget", () => {
     await resetSessionEntryLifecycle({
       storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-      buildNextEntry: () => ({ sessionId: "live-history", updatedAt: 4 }),
+      buildNextEntry: () => ({ sessionId: "live-history", updatedAt: Date.now() }),
     });
     addRouteReference("route-only", "route-history");
     const admission = await beginSessionWorkAdmission({
