@@ -125,16 +125,25 @@ hosted in NVIDIA's catalog when their context, latency, or behavior fits better.
 
 ## Nemotron 3.5 Super VL
 
-Nemotron 3.5 Super VL is NVIDIA's vision-language model for text-and-image tasks.
-NVIDIA's [model documentation](https://docs.nvidia.com/nemo/automodel/model-coverage/omni/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)
-describes a hybrid Mamba-2 and Attention mixture-of-experts language backbone
-paired with a RADIO v2.5-H vision encoder. The documented BF16 checkpoint has
-121B total parameters and no audio encoder.
+[Nemotron 3.5 Super VL](https://docs.nvidia.com/nemo/automodel/model-coverage/omni/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)
+is NVIDIA's vision-language model for text and image input.
 
-Choose Super VL for workflows that need image understanding alongside text.
-NVIDIA's NeMo AutoModel guide includes a fine-tuning recipe for extracting
-structured fields from receipt images. Nemotron 3 Ultra remains the default
-NVIDIA model in OpenClaw.
+Pair Super VL's image support with Nemotron 3 Ultra for text. Set Ultra as the
+primary model and Super VL as the image model:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": { "primary": "nvidia/nvidia/nemotron-3-ultra-550b-a55b" },
+      "imageModel": { "primary": "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b" }
+    }
+  }
+}
+```
+
+OpenClaw uses `imageModel` for image understanding when the primary model cannot
+accept images.
 
 ## Bundled fallback catalog
 
