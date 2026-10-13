@@ -53,6 +53,7 @@ export type MenuProps = {
   open?: boolean;
   disabled?: boolean;
   onSelect?: (item: MenuItem, event: CustomEvent<MenuItem>) => void;
+  onNavigate?: (link: { href: string; value: string }) => void;
   pointerFocus?: "menu" | "trigger";
   onOpenChange?(open: boolean): void;
   onBeforeShow?(event: Event): void;
@@ -133,6 +134,9 @@ export function Menu(props: BranchProps): JSX.Element {
     props.onSelect?.(item, event);
     if (!overlay.surface.dispatchEvent(event)) {
       return;
+    }
+    if (item.href) {
+      props.onNavigate?.({ href: item.href, value: item.id });
     }
     if (item.closeOnSelect !== false) {
       menuRoot.request(false, "return");
@@ -311,6 +315,7 @@ export function Menu(props: BranchProps): JSX.Element {
                           item().type,
                           item().checked,
                           item().label,
+                          Boolean(item().href && props.onNavigate),
                         )}
                         type={item().href ? undefined : "button"}
                         href={item().disabled ? undefined : item().href}
@@ -353,6 +358,7 @@ export function Menu(props: BranchProps): JSX.Element {
                         disabled={item().disabled}
                         triggerClass={item().class}
                         onSelect={props.onSelect}
+                        onNavigate={props.onNavigate}
                       >
                         {item().content}
                       </Menu>

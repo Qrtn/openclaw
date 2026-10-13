@@ -8,6 +8,7 @@ import {
 import { isPointInPolygon } from "@zag-js/rect-utils";
 import { VanillaMachine, normalizeProps } from "@zag-js/vanilla";
 import { createEffect, createSignal, onSettled, untrack } from "solid-js";
+import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
 import type { Overlay } from "../overlay-lifecycle.ts";
 import { containsComposed } from "../overlay-registry.ts";
 
@@ -50,6 +51,7 @@ export type MenuBinding = {
     type?: "checkbox" | "radio",
     checked?: boolean,
     label?: string,
+    interceptLinkNavigation?: boolean,
   ): Record<string, unknown>;
   trigger(parentBinding?: MenuBinding, disabled?: boolean): Record<string, unknown>;
   content(): Record<string, unknown>;
@@ -206,6 +208,7 @@ export function useMenuMachine(
       type?: "checkbox" | "radio",
       checked = false,
       label = value,
+      interceptLinkNavigation = false,
     ) {
       const api = read();
       const result = type
@@ -220,6 +223,23 @@ export function useMenuMachine(
         : api.getItemProps({ value, valueText: label, disabled, closeOnSelect: false });
       return {
         ...result,
+        onClick: (event: MouseEvent) => {
+          const anchor = event.currentTarget;
+          if (anchor instanceof HTMLAnchorElement) {
+            if (
+              !shouldHandleNavigationClick(event) ||
+              (anchor.target !== "" && anchor.target !== "_self") ||
+              anchor.hasAttribute("download")
+            ) {
+              return;
+            }
+            if (interceptLinkNavigation) {
+              // Zag queues selection, so reserve same-tab navigation during the native click.
+              event.preventDefault();
+            }
+          }
+          result.onClick?.(event);
+        },
         onPointerMove: (event: PointerEvent) => {
           if (event.movementX === 0 && event.movementY === 0) {
             return;
