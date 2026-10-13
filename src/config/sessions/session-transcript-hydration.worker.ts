@@ -34,7 +34,7 @@ import {
 const SLICE_BYTES = 64 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
 const CHUNK_FRAMES = 128;
-// PostgreSQL buffers a page, so its first identity slices must fit one chunk.
+// Each buffered row carries one identity slice or small compressed blob, never both.
 const PAGE_ROWS = CHUNK_BYTES / SLICE_BYTES;
 
 /** One task owns its snapshot through every acknowledged frame and native cleanup. */
@@ -76,17 +76,35 @@ export async function streamSessionTranscriptHydration(
       const eventSlice = (offset: number | Expression<number>) =>
         engineTextByteSliceSql(database.db, identity, offset, SLICE_BYTES).as("data");
       const pageQuery = source
-        .select(["seq", eventSlice(1)])
+        .select([
+          "seq",
+          eventSlice(1),
+          "event_utf8_bytes",
+          // kysely-allow-raw: Admit small compressed bodies inline without exceeding the page byte bound.
+          sql<Uint8Array | null>`CASE WHEN event_json IS NULL
+            AND octet_length(event_zstd) BETWEEN 1 AND ${SLICE_BYTES}
+            AND event_utf8_bytes BETWEEN 1 AND ${MAX_COMPRESSED_EVENT_BYTES}
+            THEN event_zstd ELSE NULL END`.as("event_zstd"),
+          // kysely-allow-raw: Only larger blobs require a separate bounded read; invalid small rows decode as rejected.
+          sql<number | null>`octet_length(event_zstd)`.as("compressed_bytes"),
+        ])
         .orderBy("seq", "asc")
         .limit(PAGE_ROWS);
-      const readPage = prepareSqliteQuerySync<number, { seq: number; data: Uint8Array | null }>(
-        database.db,
-        (parameter) =>
-          pageQuery.where(
-            "seq",
-            ">",
-            parameter((seq) => seq),
-          ),
+      const readPage = prepareSqliteQuerySync<
+        number,
+        {
+          seq: number;
+          data: Uint8Array | null;
+          event_utf8_bytes: number | null;
+          event_zstd: Uint8Array | null;
+          compressed_bytes: number | null;
+        }
+      >(database.db, (parameter) =>
+        pageQuery.where(
+          "seq",
+          ">",
+          parameter((seq) => seq),
+        ),
       );
       const readPart = prepareSqliteQueryTakeFirstSync<
         { seq: number; offset: number },
@@ -141,7 +159,12 @@ export async function streamSessionTranscriptHydration(
             ? executeSqliteQuerySync(database.db, pageQuery).rows
             : readPage(afterSeq).rows;
         for (const row of page) {
-          const compressed = row.data === null ? readCompressed(row.seq) : undefined;
+          const compressed =
+            row.data === null
+              ? (row.compressed_bytes ?? 0) > SLICE_BYTES
+                ? readCompressed(row.seq)
+                : row
+              : undefined;
           const decoded = compressed
             ? readCompressedTranscriptPayloadBytes(
                 compressed.event_zstd,

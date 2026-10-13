@@ -65,7 +65,7 @@ function fixture(
       {
         kind: "transcript-hydration",
         database: { agentId: "main", path: pathname },
-        resolvedScope: { agentId: "main", sessionId: "fixture", storePath: pathname },
+        resolvedScope: { agentId: "main", sessionId: "fixture", path: pathname },
         target: { sessionId: "fixture" },
         includeEventJson: true,
         afterSeq,
@@ -149,6 +149,45 @@ it("keeps exact bytes and one snapshot across ACKs and keyset pages", async () =
     expect(decode).toHaveBeenCalledTimes(1);
     expect(f.reader.isOpen).toBe(false);
   } finally {
+    f.writer.close();
+  }
+});
+
+it("reads small compressed bodies with their page and fetches only large compressed blobs", async () => {
+  const codec = resolveZstdCodec()!;
+  const noise = Buffer.alloc(256 * 1024);
+  let seed = 1;
+  for (let index = 0; index < noise.length; index++) {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    noise[index] = seed & 255;
+  }
+  const texts = [
+    ...Array.from({ length: 16 }, (_, seq) =>
+      JSON.stringify({ id: seq, data: "x".repeat(1536 + seq * 400) }),
+    ),
+    JSON.stringify({ id: 16, data: noise.toString("base64") }),
+  ];
+  const rows = texts.map((text, seq) => ({
+    seq,
+    compressed: codec.compress(Buffer.from(text), 1, true),
+    size: Buffer.byteLength(text),
+  }));
+  expect(rows.slice(0, 16).every((row) => row.compressed.byteLength <= 65536)).toBe(true);
+  expect(rows.at(-1)?.compressed.byteLength).toBeGreaterThan(65536);
+  const f = fixture(rows);
+  const reads = trackSqliteStatementExecutions(f.reader, ["payload"], (statement) =>
+    /\bfrom "transcript_events"/i.test(statement) && !/max\(/i.test(statement) ? "payload" : null,
+  );
+  try {
+    await expect(f.stream()).resolves.toMatchObject({ eventCount: texts.length });
+    expect(reads.counts.payload).toBe(3);
+    expect(
+      Buffer.concat(f.chunks.flatMap((chunk) => chunk.frames.map((frame) => frame.data))),
+    ).toEqual(Buffer.from(texts.join("")));
+  } finally {
+    reads.restore();
     f.writer.close();
   }
 });
