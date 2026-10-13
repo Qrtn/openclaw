@@ -58,8 +58,8 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     params.runtimePlan = createCodexRuntimePlanFixture();
     setCodexTestModelSupportsTools(params, true);
     const closeHost = await bindProductionHarnessHostCapabilitiesForTest(params);
-    // Keep fixture I/O from spending the attempt clock before the command starts.
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    // Freeze wall and execution clocks so fixture I/O cannot spend the attempt deadline.
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const run = runCodexAppServerAttempt(params);
     let response: ReturnType<typeof callTool> | undefined;
     try {
@@ -110,7 +110,7 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     setCodexTestModelSupportsTools(params, true);
     const closeHostCapabilities = await bindProductionHarnessHostCapabilitiesForTest(params);
     // Protocol acceptance owns this test; host I/O must not spend the execution watchdog.
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const run = runCodexAppServerAttempt(params);
     try {
       await Promise.race([
