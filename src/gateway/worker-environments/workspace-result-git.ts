@@ -2,6 +2,7 @@ import os from "node:os";
 import { runGitBuffered } from "../../agents/worktrees/git.js";
 import { enqueueGitRefMutation, gitCommandArgv } from "../../infra/git-exec.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
+import { withGitProcessOperation } from "../../process/spawn-diagnostics.js";
 
 export const WORKSPACE_RESULT_GIT_TIMEOUT_MS = 10 * 60_000;
 
@@ -16,6 +17,7 @@ export async function readWorkspaceResultGit(
   failureMessage = `git ${args[0]} failed`,
 ): Promise<Buffer> {
   const result = await runGitBuffered(root, args, {
+    operation: "workspace.result",
     timeoutMs: WORKSPACE_RESULT_GIT_TIMEOUT_MS,
     ...options,
   });
@@ -38,13 +40,15 @@ export async function requireWorkspaceResultGit(
   args: string[],
   options: { input?: Uint8Array; baseEnv?: NodeJS.ProcessEnv; beforeInput?: () => void } = {},
 ): Promise<string> {
-  const result = await runCommandWithTimeout(workspaceResultGitCommand(cwd, args), {
-    timeoutMs: WORKSPACE_RESULT_GIT_TIMEOUT_MS,
-    maxOutputBytes: 1024 * 1024,
-    baseEnv: options.baseEnv,
-    input: options.input,
-    beforeInput: options.beforeInput,
-  });
+  const result = await withGitProcessOperation("workspace.result", () =>
+    runCommandWithTimeout(workspaceResultGitCommand(cwd, args), {
+      timeoutMs: WORKSPACE_RESULT_GIT_TIMEOUT_MS,
+      maxOutputBytes: 1024 * 1024,
+      baseEnv: options.baseEnv,
+      input: options.input,
+      beforeInput: options.beforeInput,
+    }),
+  );
   if (result.termination !== "exit" || result.code !== 0) {
     throw new Error((result.stderr || result.stdout || `git ${args[0]} failed`).trim());
   }

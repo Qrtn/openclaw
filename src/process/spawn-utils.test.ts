@@ -140,6 +140,8 @@ describe("child-process spawn diagnostics", () => {
     await Promise.all([
       executeGitCommand(process.cwd(), ["--version"], { operation: "project.clone" }),
       executeGitCommandBuffered(process.cwd(), ["--version"], { operation: "publication" }),
+      executeGitCommand(process.cwd(), ["--version"], { lowerPriority: true }),
+      once(spawnProcess("git", ["--version"], { stdio: "ignore" }), "close"),
     ]);
     now = 59_999;
     emitChildProcessSpawnSample();
@@ -157,11 +159,12 @@ describe("child-process spawn diagnostics", () => {
         ...["project.clone", "publication"].map((operation) =>
           expect.objectContaining({ family: "git", operation, count: 1, intervalMs: 90_000 }),
         ),
+        expect.objectContaining({ family: "git", operation: "unscoped.version", count: 2 }),
       ]),
     );
     now = 150_000;
     emitChildProcessSpawnSample();
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(4);
   }
 
   it(
@@ -196,7 +199,7 @@ describe("child-process spawn diagnostics", () => {
     emitChildProcessSpawnSample();
     expect(events).toEqual([
       expect.objectContaining({ family: "other", operation: "none", count: 1 }),
-      expect.objectContaining({ family: "git", operation: "unknown", count: 1 }),
+      expect.objectContaining({ family: "git", operation: "unscoped.other", count: 1 }),
       expect.objectContaining({ family: "bun", operation: "none", count: 1 }),
     ]);
     expect(JSON.stringify(events)).not.toContain("private");
@@ -238,5 +241,27 @@ describe("child-process spawn diagnostics", () => {
       expect.objectContaining({ family: "git", operation: "unknown", count: 1 }),
     ]);
     expect(JSON.stringify(events)).not.toContain("private");
+  });
+
+  it.each([
+    [
+      ["-C", "/private/repo", "-c", "alias.secret=status", "config", "--get", "user.email"],
+      "unscoped.config",
+    ],
+    [["--git-dir=/private/repo", "--no-pager", "rev-parse", "private-ref"], "unscoped.rev-parse"],
+    [
+      ["--config-env", "secret=PRIVATE_VALUE", "--work-tree", "/private/tree", "status"],
+      "unscoped.status",
+    ],
+    [["-c", "alias.private-command=status", "private-command"], "unscoped.other"],
+    [["--unknown-option", "config"], "unscoped.other"],
+  ])("classifies unscoped Git argv %j without exporting its values", (args, operation) => {
+    const child = new EventEmitter() as ChildProcess;
+    recordChildProcessSpawn("git", child, undefined, args);
+    child.emit("spawn");
+    now = 60_000;
+    emitChildProcessSpawnSample();
+    expect(events).toEqual([expect.objectContaining({ family: "git", operation, count: 1 })]);
+    expect(JSON.stringify(events)).not.toMatch(/private|secret|PRIVATE_VALUE/);
   });
 });

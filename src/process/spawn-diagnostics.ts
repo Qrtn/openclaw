@@ -34,6 +34,13 @@ const GIT_OPERATIONS = [
   "project.clone",
   "session.materialize",
   "publication",
+  "github.identity",
+  "project.checkout",
+  "update.inspect",
+  "worktree.config",
+  "worktree.maintenance",
+  "workspace.sync",
+  "workspace.result",
 ] as const;
 export type GitProcessOperation = (typeof GIT_OPERATIONS)[number];
 const gitOperations: ReadonlySet<string> = new Set(GIT_OPERATIONS);
@@ -41,6 +48,33 @@ const gitOperation = resolveGlobalSingleton(
   Symbol.for("openclaw.gitSpawnOperation"),
   () => new AsyncLocalStorage<GitProcessOperation | "unknown">(),
 );
+
+// Unscoped callers remain visible without exporting aliases, arguments, or repository paths.
+function unscopedGitOperation(args: readonly string[]): string {
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i]!;
+    if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(arg)) {
+      i += 2;
+    } else if (/^--(?:git-dir|work-tree|namespace|config-env)=/u.test(arg)) {
+      i++;
+    } else if (
+      ["--no-pager", "--no-optional-locks", "--literal-pathspecs", "--bare"].includes(arg)
+    ) {
+      i++;
+    } else {
+      break;
+    }
+  }
+  const command = args[i] ?? "";
+  return /^(config|rev-parse|status|diff|ls-files|rev-list|merge-base|cat-file|symbolic-ref|for-each-ref|show-ref|remote|log|show|hash-object|update-ref|worktree|branch|fetch|clone|init|checkout|read-tree|write-tree|commit-tree|pack-objects|index-pack|maintenance|multi-pack-index|gc|fast-import|add|commit|push|reset|clean|merge|tag)$/u.test(
+    command,
+  )
+    ? `unscoped.${command}`
+    : command === "--version"
+      ? "unscoped.version"
+      : "unscoped.other";
+}
 
 /** Preserve the admitted owner across retries, ref admission, and asynchronous spawn events. */
 export function withGitProcessOperation<T>(
@@ -57,6 +91,7 @@ export function recordChildProcessSpawn(
   command: string,
   child: ChildProcess,
   sqliteOperation?: `sqlite.${"scoped-read" | "session"}.${"broker" | "native"}`,
+  args: readonly string[] = [],
 ): void {
   if (!areDiagnosticsEnabledForProcess()) {
     return;
@@ -67,7 +102,9 @@ export function recordChildProcessSpawn(
     .replace(/\.(exe|cmd)$/, "");
   const family = COMMAND_FAMILIES.test(name) ? name : "other";
   const operation =
-    family === "git" ? (gitOperation.getStore() ?? "unknown") : (sqliteOperation ?? "none");
+    family === "git"
+      ? (gitOperation.getStore() ?? unscopedGitOperation(args))
+      : (sqliteOperation ?? "none");
   const key = `${family}:${operation}`;
   child.once("spawn", () => {
     if (areDiagnosticsEnabledForProcess()) {
