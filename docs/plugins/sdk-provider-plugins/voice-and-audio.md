@@ -409,6 +409,8 @@ Register each capability inside `register(api)` alongside your existing
     optional `disposition`: `"detach"` preserves accepted agent work when
     the client fails, while `"abort"` (or omission) cancels it on Stop. Check
     the `talk-session-close-disposition` capability before sending the field.
+    On failure, the original agent answers remain visible alongside any recorded
+    speech; speech alone cannot prove which overlapping consults were delivered.
 
   </Tab>
   <Tab title="Media understanding">

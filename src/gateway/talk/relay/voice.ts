@@ -196,7 +196,8 @@ async function revealUnspokenRelayAnswers(
   session: RelaySession,
   writer: ClientVoiceSessionWriter,
 ): Promise<void> {
-  if (!session.consultSessionIds?.size) {
+  const consultTranscripts = session.consultTranscripts;
+  if (!consultTranscripts?.size) {
     return;
   }
   const { agentId, canonicalKey: sessionKey, storePath } = session.sessionTarget;
@@ -230,9 +231,15 @@ async function revealUnspokenRelayAnswers(
         storePath: source.scope?.storePath ?? storePath,
         env: writer.options.env,
       };
+      const bounds = [...consultTranscripts.values()].filter(
+        (bound) => bound.sessionId === entry.sessionId,
+      );
+      if (!bounds.length) {
+        return;
+      }
       const facts = await readSessionTranscriptAnchorsAsync(scope, {
         entryIds: [],
-        afterSeq: 0,
+        afterSeq: Math.min(...bounds.map((bound) => bound.afterSeq)),
         includeSession: true,
       });
       assertCurrent();
@@ -243,24 +250,16 @@ async function revealUnspokenRelayAnswers(
         return;
       }
       const entries = facts.tail?.entries ?? [];
-      const entryIds: string[] = [];
-      let spoken = false;
-      for (const item of entries.toReversed()) {
-        if (item.role === "user") {
-          // A later request's acknowledgement cannot replace an earlier answer.
-          spoken = false;
-        } else if (item.entryId.startsWith(`voice:${session.id}:`)) {
-          spoken = true;
-        } else if (
-          !spoken &&
-          item.runId &&
-          session.consultSessionIds?.get(item.runId) === entry.sessionId
-        ) {
-          entryIds.push(item.entryId);
-        }
-      }
+      // Speech carries no consult identity, so it cannot certify delivery of these answers.
+      const entryIds = entries.flatMap((item) =>
+        item.role === "assistant" &&
+        item.runId &&
+        consultTranscripts.get(item.runId)?.sessionId === entry.sessionId
+          ? [item.entryId]
+          : [],
+      );
       const selected = await readSessionTranscriptAnchorsAsync(scope, {
-        entryIds: entryIds.toReversed(),
+        entryIds,
       });
       assertCurrent();
       for (const anchor of selected.anchors) {
@@ -270,7 +269,7 @@ async function revealUnspokenRelayAnswers(
             if (
               !isRecord(message) ||
               message.display !== false ||
-              session.consultSessionIds?.get(readSessionTranscriptRunId(message) ?? "") !==
+              consultTranscripts.get(readSessionTranscriptRunId(message) ?? "")?.sessionId !==
                 entry.sessionId ||
               !isTalkAgentConsultFinalMessage(message)
             ) {
@@ -349,10 +348,14 @@ export function closeRelayVoiceSession(
     session.voiceSessionSource?.settlementContext,
   ).catch((error: unknown) => {
     logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
+    if (disposition === "detach") {
+      throw error;
+    }
   });
   drainingRelaySessions.add(session);
-  void session.voiceSessionClose.finally(() => {
-    drainingRelaySessions.delete(session);
-  });
+  void session.voiceSessionClose.then(
+    () => drainingRelaySessions.delete(session),
+    () => drainingRelaySessions.delete(session),
+  );
   return session.voiceSessionClose;
 }

@@ -59,13 +59,6 @@ import {
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { captureSessionMutationRouting } from "./session-sharing-routing.js";
 import { createTalkClientAgentConsultRunner } from "./talk/client-agent-consult.js";
-import { createIdleRelayProvider } from "./talk/relay/index.test-support.js";
-import { closeRelaySession, flushTalkRealtimeRelayVoiceWrites } from "./talk/relay/operations.js";
-import { createTalkRealtimeRelaySession } from "./talk/relay/session-create.js";
-import { relaySessions } from "./talk/relay/state.js";
-import { enqueueRelayVoiceTranscript } from "./talk/relay/voice.js";
-import { rememberUnifiedTalkSession } from "./talk/session-registry.js";
-import { prepareTalkSessionTarget } from "./talk/session-target.js";
 import {
   createGatewaySuiteHarness,
   dispatchInboundMessageMock,
@@ -814,139 +807,29 @@ describe("Gateway-relay Talk consult history after call closure", () => {
     ["detach", true, false, false],
     ["detach", true, true, false],
     ["detach", true, false, true],
+    ["detach", true, true, true],
   ] as const)(
-    "settles close disposition %s (after final: %s; spoken replacement: %s; pending follow-up: %s)",
+    "settles close disposition %s (after final: %s; spoken transcript: %s; second consult: %s)",
     async (disposition, afterFinal, spokenReplacement, pendingFollowUp) => {
-      const finalCommitted = createDeferred();
-      const spokenAnswer = "SPOKEN_DETACH_171310: The requested note is saved.";
-      const followUpAnswer = "FOLLOWUP_DETACH_171310: The next requested note is saved.";
-      let modelCalls = 0;
-      const completeModel = expectDefined(
-        runEmbeddedAgent.getMockImplementation(),
-        "held model implementation",
-      );
-      runEmbeddedAgent.mockImplementation(async (params) => {
-        const modelAnswer = modelCalls++ === 0 ? answer : followUpAnswer;
-        await params.userTurnTranscriptRecorder?.persistApproved();
-        const result = await completeModel(params);
-        params.abortSignal?.throwIfAborted();
-        guardSessionManager(SessionManager.open(scope()), {
-          agentId: params.agentId,
-          sessionKey: params.sessionKey,
-          runId: params.runId,
-          prepareAssistantTranscriptMessage: params.prepareAssistantTranscriptMessage,
-        }).appendMessage(
-          makeAgentAssistantMessage({ content: [{ type: "text", text: modelAnswer }] }),
-        );
-        finalCommitted.resolve();
-        return { ...result, payloads: [{ text: modelAnswer }] };
-      });
-      const target = await prepareTalkSessionTarget(getRuntimeConfig(), sessionKey);
-      const relay = createTalkRealtimeRelaySession({
+      const { runTalkRelayCloseHistory } =
+        await import("./server.talk-relay-history.test-support.js");
+      await runTalkRelayCloseHistory({
+        disposition,
+        afterFinal,
+        spokenReplacement,
+        pendingFollowUp,
+        scope,
+        sessionKey,
+        connectionId,
         context,
-        connId: connectionId,
-        provider: createIdleRelayProvider(),
-        providerConfig: {},
-        controlSource: "transcript",
-        sessionTarget: target,
-        instructions: "Test relay",
-        tools: [],
+        runEmbeddedAgent,
+        rpc,
+        waitForDispatchEnd,
+        drainPublications,
+        historyMessages,
+        answer,
+        args,
       });
-      rememberUnifiedTalkSession(relay.relaySessionId, {
-        kind: "realtime-relay",
-        connId: connectionId,
-        relaySessionId: relay.relaySessionId,
-        sessionTarget: target,
-      });
-      try {
-        const ack = await rpc("talk.client.toolCall", {
-          sessionKey,
-          relaySessionId: relay.relaySessionId,
-          voiceSessionId: relay.relaySessionId,
-          callId: "close-held-relay-consult",
-          name: REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
-          args,
-        });
-        await Promise.race([
-          modelStarted.promise,
-          getSessionWorkAdmissionRelease({
-            scope: storePath,
-            identities: [canonicalKey, sessionId],
-          }),
-        ]);
-        const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "relay model invocation");
-        const signal = expectDefined(run.abortSignal, "relay run cancellation");
-        expect(run).toMatchObject({ agentId, sessionId, sessionKey: canonicalKey });
-        expect(signal.aborted).toBe(false);
-        expect(ack.runId).toBe(run.runId);
-        if (afterFinal) {
-          releaseModel.resolve();
-          await finalCommitted.promise;
-          await waitForDispatchEnd();
-        }
-        if (spokenReplacement) {
-          const owner = expectDefined(relaySessions.get(relay.relaySessionId), "live relay");
-          expect(enqueueRelayVoiceTranscript(owner, "assistant", spokenAnswer)).toBe(true);
-          await flushTalkRealtimeRelayVoiceWrites({
-            relaySessionId: relay.relaySessionId,
-            connId: connectionId,
-          });
-        }
-        if (pendingFollowUp) {
-          modelStarted = createDeferred();
-          releaseModel = createDeferred();
-          await rpc("talk.client.toolCall", {
-            sessionKey,
-            relaySessionId: relay.relaySessionId,
-            voiceSessionId: relay.relaySessionId,
-            callId: "pending-follow-up-consult",
-            name: REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
-            args: { question: "Save the next requested note." },
-          });
-          await modelStarted.promise;
-          expect(runEmbeddedAgent).toHaveBeenCalledTimes(2);
-          const owner = expectDefined(relaySessions.get(relay.relaySessionId), "live relay");
-          expect(
-            enqueueRelayVoiceTranscript(owner, "assistant", "Let me check the next note."),
-          ).toBe(true);
-          await flushTalkRealtimeRelayVoiceWrites({
-            relaySessionId: relay.relaySessionId,
-            connId: connectionId,
-          });
-        }
-        await rpc("talk.session.close", {
-          sessionId: relay.relaySessionId,
-          ...(disposition ? { disposition } : {}),
-        });
-        expect(signal.aborted).toBe(disposition !== "detach");
-        releaseModel.resolve();
-        await waitForDispatchEnd();
-        await drainPublications();
-        const expectedAnswers =
-          disposition === "detach" ? [spokenReplacement ? spokenAnswer : answer] : [];
-        if (pendingFollowUp) {
-          expectedAnswers.push(followUpAnswer);
-        }
-        expect(
-          (await historyMessages())
-            .map(extractText)
-            .filter((text) => text === answer || text === spokenAnswer || text === followUpAnswer),
-        ).toEqual(expectedAnswers);
-        const stored = loadTranscriptEventsSync(scope()).flatMap((event) => {
-          const message = asOptionalRecord(asOptionalRecord(event)?.message);
-          return message && extractText(message) === answer ? [message] : [];
-        });
-        expect(stored.map(extractText)).toEqual(disposition === "detach" ? [answer] : []);
-        if (disposition === "detach") {
-          expect(stored[0]?.display).toBe(spokenReplacement ? false : undefined);
-        }
-      } finally {
-        const active = relaySessions.get(relay.relaySessionId);
-        if (active) {
-          await closeRelaySession(active, "completed");
-        }
-        releaseModel.resolve();
-      }
     },
   );
 });

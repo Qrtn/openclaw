@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import * as sessionEntryRead from "../../../config/sessions/session-entry-read-runtime.js";
 import { SqliteWorkerError } from "../../../infra/sqlite-worker-contract.js";
 import {
   captureClientVoiceSessionSettlement,
@@ -97,6 +98,32 @@ describe("realtime relay voice transcript persistence", () => {
     voiceSessionMocks.captureClientVoiceSessionWriter
       .mockReset()
       .mockImplementation(() => ({ source, release: () => Promise.resolve() }));
+  });
+
+  it("rejects a detached close when answer reconciliation fails", async () => {
+    const { session } = createRelaySession();
+    session.voiceSessionCreated = true;
+    session.consultTranscripts = new Map([["accepted-run", { sessionId: "session", afterSeq: 0 }]]);
+    const release = vi.fn(async () => {});
+    voiceSessionMocks.captureClientVoiceSessionWriter.mockReturnValue({
+      options: { env: {} },
+      source: { assertCurrent() {} },
+      assertCurrent() {},
+      release,
+    });
+    const failure = new Error("Answer reconciliation read failed");
+    const read = vi
+      .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
+      .mockRejectedValueOnce(failure);
+    try {
+      await expect(closeRelayVoiceSession(session, "detach")).rejects.toBe(failure);
+      expect(release).toHaveBeenCalledOnce();
+      expect(session.context.logGateway.warn).toHaveBeenCalledWith(
+        "realtime relay voice session close failed: Answer reconciliation read failed",
+      );
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it("joins its accepted prefix after close settlement admission is lost", async () => {

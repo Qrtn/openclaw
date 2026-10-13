@@ -277,7 +277,7 @@ export type RelaySession = {
   cleanupTimer: ReturnType<typeof setTimeout>;
   activeAgentRuns: Map<string, RelayAgentRun>;
   /** Retain admitted transcript identities after completed runs release their live slots. */
-  consultSessionIds?: Map<string, string>;
+  consultTranscripts?: Map<string, { sessionId: string; afterSeq: number }>;
   provider: string;
   activeAgentToolCalls: Map<string, RelayAgentRunRegistration>;
   toolCalls: RelayToolCallLedger;

@@ -70,6 +70,7 @@ export function createRelayAgentRunRegistration(
     sessionKey: string;
     runId: string;
     callId?: string;
+    transcriptStart?: { sessionId: string; afterSeq: number };
     assertCurrent?: () => void;
     registerVoice?: (
       assertCurrent: () => void,
@@ -202,8 +203,8 @@ export function createRelayAgentRunRegistration(
             });
           }
           assertCurrent();
-          if (callId && chat) {
-            (session.consultSessionIds ??= new Map()).set(params.runId, chat.sessionId);
+          if (callId && params.transcriptStart) {
+            (session.consultTranscripts ??= new Map()).set(params.runId, params.transcriptStart);
           }
           return registration;
         },
