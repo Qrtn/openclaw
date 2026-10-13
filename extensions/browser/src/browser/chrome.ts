@@ -363,18 +363,14 @@ async function terminateOwnedStaleChromeProcess(
   return false;
 }
 
-function clearRecoveredChromeSingletonArtifacts(
-  userDataDir: string,
-  pid: number,
-  hostname = os.hostname(),
-): boolean {
+function clearRecoveredChromeSingletonArtifacts(userDataDir: string, pid: number): boolean {
   if (isPidAlive(pid)) {
     return false;
   }
   // The stopped shell may have inherited a dead local full-Chromium lock.
   return (
     readSingletonLockTarget(userDataDir).status === "missing" ||
-    clearStaleChromeSingletonLocks(userDataDir, hostname)
+    clearStaleChromeSingletonLocks(userDataDir)
   );
 }
 

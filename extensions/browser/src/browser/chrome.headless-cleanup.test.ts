@@ -43,7 +43,10 @@ vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/security-runtime")>()),
   ensurePortAvailable: fixture.portProbe,
 }));
-vi.mock("./trash.js", () => ({ movePathToTrash: fixture.trash }));
+vi.mock("./trash.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./trash.js")>()),
+  movePathToTrash: fixture.trash,
+}));
 vi.mock("openclaw/plugin-sdk/file-lock", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/file-lock")>();
   return {
