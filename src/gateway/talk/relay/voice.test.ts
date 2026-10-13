@@ -100,31 +100,46 @@ describe("realtime relay voice transcript persistence", () => {
       .mockImplementation(() => ({ source, release: () => Promise.resolve() }));
   });
 
-  it("rejects a detached close when answer reconciliation fails", async () => {
-    const { session } = createRelaySession();
-    session.voiceSessionCreated = true;
-    session.consultTranscripts = new Map([["accepted-run", { sessionId: "session", afterSeq: 0 }]]);
-    const release = vi.fn(async () => {});
-    voiceSessionMocks.captureClientVoiceSessionWriter.mockReturnValue({
-      options: { env: {} },
-      source: { assertCurrent() {} },
-      assertCurrent() {},
-      release,
-    });
-    const failure = new Error("Answer reconciliation read failed");
-    const read = vi
-      .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
-      .mockRejectedValueOnce(failure);
-    try {
-      await expect(closeRelayVoiceSession(session, "detach")).rejects.toBe(failure);
-      expect(release).toHaveBeenCalledOnce();
-      expect(session.context.logGateway.warn).toHaveBeenCalledWith(
-        "realtime relay voice session close failed: Answer reconciliation read failed",
-      );
-    } finally {
-      read.mockRestore();
-    }
-  });
+  it.each([false, true])(
+    "settles detached answer reconciliation (transient=%s)",
+    async (transient) => {
+      const { session } = createRelaySession();
+      session.voiceSessionCreated = true;
+      session.consultTranscripts = new Map([
+        ["accepted-run", { sessionId: "session", afterSeq: 0 }],
+      ]);
+      const release = vi.fn(async () => {});
+      voiceSessionMocks.captureClientVoiceSessionWriter.mockReturnValue({
+        options: { env: {} },
+        source: { assertCurrent() {} },
+        assertCurrent() {},
+        release,
+      });
+      const failure = new Error("Answer reconciliation read failed");
+      const read = vi
+        .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
+        .mockRejectedValue(failure);
+      if (transient) {
+        read.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+      }
+      try {
+        const closing = closeRelayVoiceSession(session, "detach");
+        if (transient) {
+          await expect(closing).resolves.toBeUndefined();
+          expect(session.context.logGateway.warn).not.toHaveBeenCalled();
+        } else {
+          await expect(closing).rejects.toBe(failure);
+          expect(session.context.logGateway.warn).toHaveBeenCalledWith(
+            "realtime relay voice session close failed: Answer reconciliation read failed",
+          );
+        }
+        expect(read).toHaveBeenCalledTimes(transient ? 2 : 3);
+        expect(release).toHaveBeenCalledOnce();
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
 
   it("joins its accepted prefix after close settlement admission is lost", async () => {
     const lifecycle = await vi.importActual<
