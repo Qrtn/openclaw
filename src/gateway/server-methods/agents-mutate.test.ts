@@ -73,7 +73,7 @@ const mocks = vi.hoisted(() => ({
   beginAgentDeletionRetire: vi.fn(),
   readSessionEntrySummariesInWorker: vi.fn(async () => []),
   closeDeletedAgentDatabases: vi.fn(async () => {}),
-  hasDeletedAgentDatabases: vi.fn(() => false),
+  captureDeletedAgentDatabaseFences: vi.fn<() => [string, string][]>(() => []),
   reviveAgentDatabases: vi.fn(async (_agentIds: readonly string[]) => {}),
   logGatewayWarn: vi.fn(),
   runAgentDatabaseCleanup: vi.fn(
@@ -331,7 +331,7 @@ vi.mock("../../state/openclaw-agent-db-readers.js", () => ({
 
 vi.mock("../../infra/agent-database-readers.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/agent-database-readers.js")>()),
-  hasDeletedAgentDatabases: mocks.hasDeletedAgentDatabases,
+  captureDeletedAgentDatabaseFences: mocks.captureDeletedAgentDatabaseFences,
 }));
 
 vi.mock("../../infra/exec-approvals.js", async (importOriginal) => ({
@@ -455,7 +455,7 @@ vi.mock("../../utils.js", async () => {
   };
 });
 
-// mock-isolation: Preserve canonical key logic without bringing database lookup into this fixture.
+// mock-isolation: Keep deletion lifecycle tests on synthetic config and session metadata without opening databases.
 vi.mock("../session-utils.js", async () => ({
   resolveSessionStoreKey: (await import("../session-store-key.js")).resolveSessionStoreKey,
   listAgentsForGateway: mocks.listAgentsForGateway,
@@ -702,7 +702,7 @@ beforeEach(() => {
 describe("agents.create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.hasDeletedAgentDatabases.mockReturnValue(false);
+    mocks.captureDeletedAgentDatabaseFences.mockReturnValue([]);
     mocks.reviveAgentDatabases.mockReset().mockResolvedValue(undefined);
     mocks.loadConfigReturn = {
       agents: { entries: { main: {} } },
