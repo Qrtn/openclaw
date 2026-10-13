@@ -138,6 +138,8 @@ jobs:
         working-directory: apps/linux/src-tauri
         run: |
           node ../scripts/stage-runtime.mjs
+          # The native fixture supplies its CLI at the same build-time boundary.
+          python3 ../tests/stage_onboarding_runtime.py target/desktop-runtime
           cargo +stable build --locked
 
       - name: Test native inline browser
