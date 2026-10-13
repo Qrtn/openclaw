@@ -11,7 +11,7 @@ import {
 import { resolveWorkerPlacementSessionTarget } from "../../gateway/server-worker-placement-session-target.js";
 import { createWorktreeSpawnRepositoryFixture } from "../../gateway/server.sessions.create-worktree-spawn.test-support.js";
 import { createGatewaySession } from "../../gateway/session-create-service.js";
-import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
+import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import { resolveCanonicalSessionEntryFromStoreKeys } from "../../gateway/session-utils-store.js";
 import { prepareSessionWorktree } from "../../gateway/session-worktree-preparation.js";
 import { registerProjectRegistry } from "../../projects/project-registry.js";
@@ -57,7 +57,7 @@ describe("reply reset with a native session worktree", () => {
       if (!created.ok) {
         throw new Error(created.error.message);
       }
-      const native = managedWorktrees.findLiveByOwner("session", sessionKey);
+      const native = await managedWorktrees.findLiveByOwner("session", sessionKey);
       expect(native).toMatchObject({ ownerKind: "session", ownerId: sessionKey });
       if (!native) {
         throw new Error("Native session checkout was not created");
@@ -104,9 +104,9 @@ describe("reply reset with a native session worktree", () => {
           cwd: retained?.spawnedCwd,
         }),
       ).toBe(runWorkspace);
-      const placement = await resolveWorkerPlacementSessionTarget({
+      using placement = await resolveWorkerPlacementSessionTarget({
         sessionRuntime: {
-          resolveGatewaySessionStoreTargetWithStore,
+          resolveGatewaySessionStoreTargetInWorker,
           resolveCanonicalSessionEntryFromStoreKeys,
           managedWorktrees,
         },
@@ -118,7 +118,7 @@ describe("reply reset with a native session worktree", () => {
       });
       placement.assertCurrent(cfg);
       expect(placement.workspace).toEqual({ kind: "local", path: native.path });
-      expect(managedWorktrees.findLiveByOwner("session", sessionKey)).toEqual(native);
+      expect(await managedWorktrees.findLiveByOwner("session", sessionKey)).toEqual(native);
       expect(await fs.readFile(file, "utf8")).toBe("keep unfinished work\n");
     });
   });
