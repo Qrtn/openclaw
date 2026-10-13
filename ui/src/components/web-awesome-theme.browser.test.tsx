@@ -66,8 +66,12 @@ function controlStyle(
     "selected value": "display-input",
     "clear selection": "clear-button",
   }[surface];
-  const found = element.shadowRoot?.querySelector<HTMLElement>(`[part~="${name}"]`);
-  expect(found, surface).not.toBeNull();
+  const found =
+    surface === "menu"
+      ? element
+      : (element.querySelector<HTMLElement>(`.oc-menu-item__${name}`) ??
+        element.shadowRoot?.querySelector<HTMLElement>(`[part~="${name}"]`));
+  expect(found, surface).toBeInstanceOf(Element);
   // Reading computed style starts CSS transitions inside this shadow root.
   const style = getComputedStyle(found!);
   void style.color;
@@ -121,7 +125,6 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
             canRetryConnection: false,
             themeMode: "dark",
             triggerWidth: 250,
-            onTabAway() {},
             onClose() {},
             onNavigate() {},
             onPairMobile() {},
@@ -149,8 +152,9 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
       { container: host },
     ).unmount;
     flush();
-    const menu = host.querySelector("wa-dropdown")!;
+    const menu = host.querySelector(".sidebar-identity-menu")!;
     const help = host.querySelector<HTMLElement>(".sidebar-identity-menu__help")!;
+    const settings = host.querySelector<HTMLElement>('[data-value="command:settings"]')!;
     const select = host.querySelector("wa-select")!;
     const tabs = host.querySelector("wa-tab-group")!;
     const danger = [...host.querySelectorAll("wa-dropdown-item")].find(
@@ -185,7 +189,7 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
       }
       expectThemeDefaults();
       expect(controlStyle(help, "submenu indicator").color, theme).toBe(color("muted"));
-      expect(controlStyle(help, "item description").color, theme).toBe(color("muted"));
+      expect(controlStyle(settings, "item description").color, theme).toBe(color("muted"));
       expect(controlStyle(menu, "menu").backgroundColor, theme).toBe(color("bg-elevated"));
       expect(controlStyle(select, "options").backgroundColor, theme).toBe(color("popover"));
       expect(controlStyle(select, "select indicator").color, theme).toBe(color("muted"));

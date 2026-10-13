@@ -4,6 +4,7 @@ import {
   createSignal,
   flush,
   For,
+  onCleanup,
   onSettled,
   Show,
   untrack,
@@ -201,6 +202,8 @@ function SidebarAgentRosterContent(
           <For each={roster.cards()} keyed={(card) => card.id}>
             {(card) => {
               const [menuOpened, setMenuOpened] = createSignal(false);
+              let removeMenuPreparation: (() => void) | undefined;
+              onCleanup(() => removeMenuPreparation?.());
               const runVisibility = sessionRunVisibility;
               const sections = () =>
                 (props.sections ?? []).filter((section) =>
@@ -332,11 +335,27 @@ function SidebarAgentRosterContent(
                         label={t("agentsHome.agentOptions", { agent: card().name })}
                         triggerClass="sidebar-agent-roster__action"
                         trigger={<Icon name="moreHorizontal" />}
+                        ref={({ overlay }) => {
+                          const trigger = overlay.trigger!;
+                          const prepare = () => {
+                            setMenuOpened(true);
+                            // Populate lazy rows before the menu's admission check.
+                            flush();
+                          };
+                          const keydown = (event: KeyboardEvent) => {
+                            if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
+                              prepare();
+                            }
+                          };
+                          trigger.addEventListener("click", prepare, true);
+                          trigger.addEventListener("keydown", keydown, true);
+                          removeMenuPreparation = () => {
+                            trigger.removeEventListener("click", prepare, true);
+                            trigger.removeEventListener("keydown", keydown, true);
+                          };
+                        }}
                         onBeforeShow={() => {
                           roster.host().dismissTransientMenus();
-                          setMenuOpened(true);
-                          // Menu admission checks its rows before the opening event returns.
-                          flush();
                         }}
                         onSelect={(item) => {
                           switch (item.id) {

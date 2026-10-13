@@ -164,11 +164,15 @@ function renderAgentRow(
                   event.stopPropagation();
                   // Moving a keyed row into pinned-first order can drop native focus.
                   const focused = button === document.activeElement;
+                  const menu = button.closest('[role="menu"]');
+                  const value = `${AGENT_VALUE_PREFIX}${encodeURIComponent(agentId())}`;
                   void params.onTogglePinnedAgent(agentId()).then(() => {
-                    if (focused && button.isConnected) {
-                      button.focus({
-                        preventScroll: true,
-                      });
+                    if (focused) {
+                      menu
+                        ?.querySelector<HTMLElement>(
+                          `[data-value="${CSS.escape(value)}"] .sidebar-agent-menu__pin`,
+                        )
+                        ?.focus({ preventScroll: true });
                     }
                   });
                 });

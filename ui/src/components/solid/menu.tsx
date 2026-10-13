@@ -246,20 +246,32 @@ export function Menu(props: BranchProps): JSX.Element {
       }
     };
     const keydown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target.closest('[role="menu"]') !== overlay.surface) {
+        return;
+      }
+      const search = overlay.surface.querySelector<HTMLInputElement>("input[data-search]");
+      const first = ownItems(overlay.surface)[0];
       if (
-        event.target instanceof HTMLInputElement &&
-        event.target.hasAttribute("data-search") &&
-        event.target.closest('[role="menu"]') === overlay.surface &&
+        target instanceof HTMLButtonElement &&
+        target.hasAttribute("data-form-control") &&
         ["ArrowDown", "ArrowUp"].includes(event.key)
       ) {
         binding.keydown(event);
         return;
       }
-      if (event.key !== "Tab" || event.defaultPrevented || event.isComposing) {
+      if (
+        !event.defaultPrevented &&
+        !event.isComposing &&
+        ((target === search && event.key === "ArrowDown") ||
+          (target === first && search && event.key === "ArrowUp"))
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        (target === search ? first : search)?.focus({ preventScroll: true });
         return;
       }
-      const target = event.target;
-      if (!(target instanceof HTMLElement) || target.closest('[role="menu"]') !== overlay.surface) {
+      if (event.key !== "Tab" || event.defaultPrevented || event.isComposing) {
         return;
       }
       const controls = [
@@ -267,11 +279,21 @@ export function Menu(props: BranchProps): JSX.Element {
       ].filter(
         (control) =>
           control.closest('[role="menu"]') === overlay.surface &&
-          control.tabIndex >= 0 &&
+          (control.tabIndex >= 0 || control.closest('[role^="menuitem"]')) &&
           !control.matches(':disabled, [aria-disabled="true"]') &&
           !control.closest("[inert]") &&
           control.checkVisibility({ checkVisibilityCSS: true }),
       );
+      const row = target.closest<HTMLElement>('[role^="menuitem"]');
+      const firstControl = row ? controls.find((control) => row.contains(control)) : undefined;
+      if (
+        firstControl &&
+        ((!event.shiftKey && target === row) || (event.shiftKey && target === firstControl))
+      ) {
+        event.preventDefault();
+        (event.shiftKey ? row : firstControl)?.focus();
+        return;
+      }
       const index = controls.indexOf(target);
       const next = controls[index + (event.shiftKey ? -1 : 1)];
       if (index >= 0 && next) {
@@ -348,76 +370,72 @@ export function Menu(props: BranchProps): JSX.Element {
                 "aria-label": item().label,
                 "data-value": item().id,
               }));
-              return (
-                <Show
-                  when={item().children}
-                  fallback={
-                    renderCustom ? (
-                      untrack(() => renderCustom(attributes))
-                    ) : (
-                      <Item
-                        {...item().attributes}
-                        {...binding.item(
-                          item().id,
-                          item().disabled,
-                          item().type,
-                          item().checked,
-                          item().label,
-                        )}
-                        onClick={(event: MouseEvent) => {
-                          const handler = item().attributes?.onClick;
-                          if (typeof handler === "function") {
-                            handler(event);
-                          }
-                          if (!event.defaultPrevented) {
-                            const bound = binding.item(
-                              item().id,
-                              item().disabled,
-                              item().type,
-                              item().checked,
-                              item().label,
-                            );
-                            if (typeof bound.onClick === "function") {
-                              bound.onClick(event);
-                            }
-                          }
-                        }}
-                        onContextMenu={(event: MouseEvent) => {
-                          const handler = item().attributes?.onContextMenu;
-                          if (typeof handler === "function") {
-                            handler(event);
-                          }
-                          if (item().href !== undefined) {
-                            event.stopPropagation();
-                          }
-                        }}
-                        type={item().href === undefined && !item().as ? "button" : undefined}
-                        href={item().disabled ? undefined : item().href}
-                        class={["oc-menu-item", item().class]}
-                        data-value={item().id}
-                        data-variant={item().variant}
-                        role={itemRole(item().type)}
-                        aria-label={item().label}
-                        aria-checked={item().type ? (item().checked ? "true" : "false") : undefined}
-                        aria-disabled={item().disabled ? "true" : undefined}
-                        disabled={item().href === undefined ? item().disabled : undefined}
-                      >
-                        <Show when={item().type}>
-                          <span class="oc-menu-item__check" aria-hidden="true">
-                            {item().checked ? "✓" : ""}
-                          </span>
-                        </Show>
-                        <Show when={item().icon}>
-                          <span class="oc-menu-item__icon">{item().icon}</span>
-                        </Show>
-                        <span class="oc-menu-item__label">{item().content ?? item().label}</span>
-                        <Show when={item().details}>
-                          <span class="oc-menu-item__details">{item().details}</span>
-                        </Show>
-                      </Item>
-                    )
-                  }
+              const leaf = renderCustom ? (
+                untrack(() => renderCustom(attributes))
+              ) : (
+                <Item
+                  {...item().attributes}
+                  {...binding.item(
+                    item().id,
+                    item().disabled,
+                    item().type,
+                    item().checked,
+                    item().label,
+                  )}
+                  onClick={(event: MouseEvent) => {
+                    const handler = item().attributes?.onClick;
+                    if (typeof handler === "function") {
+                      handler(event);
+                    }
+                    if (!event.defaultPrevented) {
+                      const bound = binding.item(
+                        item().id,
+                        item().disabled,
+                        item().type,
+                        item().checked,
+                        item().label,
+                      );
+                      if (typeof bound.onClick === "function") {
+                        bound.onClick(event);
+                      }
+                    }
+                  }}
+                  onContextMenu={(event: MouseEvent) => {
+                    const handler = item().attributes?.onContextMenu;
+                    if (typeof handler === "function") {
+                      handler(event);
+                    }
+                    if (item().href !== undefined) {
+                      event.stopPropagation();
+                    }
+                  }}
+                  type={item().href === undefined && !item().as ? "button" : undefined}
+                  href={item().disabled ? undefined : item().href}
+                  class={["oc-menu-item", item().class]}
+                  data-value={item().id}
+                  data-variant={item().variant}
+                  role={itemRole(item().type)}
+                  aria-label={item().label}
+                  aria-checked={item().type ? (item().checked ? "true" : "false") : undefined}
+                  aria-disabled={item().disabled ? "true" : undefined}
+                  disabled={item().href === undefined ? item().disabled : undefined}
                 >
+                  <Show when={item().type}>
+                    <span class="oc-menu-item__check" aria-hidden="true">
+                      {item().checked ? "✓" : ""}
+                    </span>
+                  </Show>
+                  <Show when={item().icon}>
+                    <span class="oc-menu-item__icon">{item().icon}</span>
+                  </Show>
+                  <span class="oc-menu-item__label">{item().content ?? item().label}</span>
+                  <Show when={item().details}>
+                    <span class="oc-menu-item__details">{item().details}</span>
+                  </Show>
+                </Item>
+              );
+              return (
+                <Show when={item().children} fallback={leaf}>
                   {(children) => (
                     <Menu
                       id={`${identity.id}-${item().id}`}
@@ -448,8 +466,8 @@ export function Menu(props: BranchProps): JSX.Element {
   return (
     <div class={props.class} dir={direction()}>
       <button
-        {...props.triggerAttributes}
         {...binding.trigger(identity.binding, props.disabled)}
+        {...props.triggerAttributes}
         ref={(node) => {
           trigger = node;
           overlay.bindTrigger(node);

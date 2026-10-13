@@ -15,7 +15,7 @@ import {
   type SidebarAgentMenuSwitcherParams,
 } from "./sidebar-agent-menu-switcher.tsx";
 import { Icon } from "./solid/icon.tsx";
-import type { MenuEntry, MenuItem, MenuItemBindings } from "./solid/menu.tsx";
+import type { MenuEntry, MenuItem } from "./solid/menu.tsx";
 
 // External rows of the footer identity menu. Docs-first: public docs pages over
 // raw GitHub, matching the ClawSweeper docs-link policy for user-facing copy.
@@ -111,13 +111,16 @@ export function renderSidebarAgentMenu(params: SidebarAgentMenuParams): JSX.Elem
   const menuLabel = createMemo(() =>
     t(params.rosterMode ? "agentChip.workspaceMenuLabel" : "agentChip.menuLabel"),
   );
+  const agentsTitle = <div class="sidebar-customize-menu__title">{t("agentChip.agents")}</div>;
+  const agentsSeparator = <div class="sidebar-customize-menu__separator" role="separator" />;
+  const settingsSeparator = <div class="sidebar-customize-menu__separator" role="separator" />;
   const items = (): MenuEntry[] => [
     ...(params.agents.length > 0
       ? [
           {
             kind: "content" as const,
             id: "agents-title",
-            content: <div class="sidebar-customize-menu__title">{t("agentChip.agents")}</div>,
+            content: agentsTitle,
           },
         ]
       : []),
@@ -127,9 +130,8 @@ export function renderSidebarAgentMenu(params: SidebarAgentMenuParams): JSX.Elem
             id: "search",
             label: t("agentChip.search"),
             closeOnSelect: false,
-            render: (attributes: MenuItemBindings) => (
+            render: () => (
               <input
-                {...attributes}
                 class="sidebar-agent-menu__filter"
                 data-search
                 type="search"
@@ -157,7 +159,7 @@ export function renderSidebarAgentMenu(params: SidebarAgentMenuParams): JSX.Elem
           {
             kind: "content" as const,
             id: "agents-separator",
-            content: <div class="sidebar-customize-menu__separator" role="separator" />,
+            content: agentsSeparator,
           },
         ]
       : []),
@@ -166,7 +168,7 @@ export function renderSidebarAgentMenu(params: SidebarAgentMenuParams): JSX.Elem
     {
       kind: "content",
       id: "settings-separator",
-      content: <div class="sidebar-customize-menu__separator" role="separator" />,
+      content: settingsSeparator,
     },
     ...(activeId()
       ? [
@@ -194,6 +196,7 @@ export function renderSidebarAgentMenu(params: SidebarAgentMenuParams): JSX.Elem
       anchor={params.anchor}
       tabFocusTarget={params.tabFocusTarget}
       label={menuLabel()}
+      focusOnOpen={params.openMode !== "hover"}
       items={items()}
       onPointerEnter={params.onPointerEnter}
       onPointerLeave={params.onPointerLeave}

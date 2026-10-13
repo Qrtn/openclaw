@@ -325,8 +325,9 @@ describe("AppSidebar agent roster", () => {
       '[data-agent-group="main"] .sidebar-agent-roster__menu',
     )!;
     const agentTrigger = agentMenu.querySelector<HTMLButtonElement>(".oc-menu-trigger")!;
+    const agentSurface = agentMenu.querySelector<HTMLElement>('[role="menu"]')!;
     agentTrigger.click();
-    await sidebar.updateComplete;
+    await vi.waitFor(() => expect(agentSurface.matches(":popover-open")).toBe(true));
     const agentOptions = [...agentMenu.querySelectorAll('[role^="menuitem"]')];
     expect(agentOptions.map((item) => item.getAttribute("data-value"))).toEqual([
       "main",
@@ -334,9 +335,9 @@ describe("AppSidebar agent roster", () => {
       "collapse-others",
     ]);
     agentTrigger.click();
-    await sidebar.updateComplete;
+    await vi.waitFor(() => expect(agentSurface.matches(":popover-open")).toBe(false));
     agentTrigger.click();
-    await sidebar.updateComplete;
+    await vi.waitFor(() => expect(agentSurface.matches(":popover-open")).toBe(true));
     const retainedAgentOptions = [...agentMenu.querySelectorAll('[role^="menuitem"]')];
     expect(retainedAgentOptions).toHaveLength(agentOptions.length);
     retainedAgentOptions.forEach((item, index) => expect(item).toBe(agentOptions[index]));

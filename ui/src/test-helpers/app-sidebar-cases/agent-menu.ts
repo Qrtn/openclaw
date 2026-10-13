@@ -517,7 +517,7 @@ describe("AppSidebar agent chip", () => {
         ...(menu?.querySelectorAll<HTMLElement>(".sidebar-agent-menu__agent-switch") ?? []),
       ].find((row) => row.textContent?.includes("research"));
       expect(researchRow).toBeDefined();
-      const avatar = researchRow?.querySelector(".agent-select__avatar");
+      let avatar = researchRow?.querySelector(".agent-select__avatar");
       expect(avatar?.classList).toContain("is-pending");
       expect(avatar?.classList).not.toContain("is-fallback");
 
@@ -531,6 +531,7 @@ describe("AppSidebar agent chip", () => {
             ?.getAttribute("src"),
         ).toBe("blob:agent-avatar");
       });
+      avatar = researchRow?.querySelector(".agent-select__avatar");
       expect(avatar?.classList).toContain("is-pending");
       avatar?.querySelector("img")?.dispatchEvent(new Event("load"));
       expect(avatar?.classList).not.toContain("is-pending");

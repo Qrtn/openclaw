@@ -119,7 +119,7 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
     await import("./app-sidebar.tsx");
     const { createGatewayHarness, createSessions, mountSidebar } =
       await import("../test-helpers/app-sidebar.ts");
-    const { sidebar } = await mountSidebar(
+    const { sidebar, context } = await mountSidebar(
       createGatewayHarness({ instanceId: "self-instance" } as GatewayBrowserClient).gateway,
       createSessions("main", ["agent:main:main"]),
       "panel",
@@ -135,6 +135,11 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
         ],
       },
     );
+    onTestFinished(
+      context.navigation.subscribe((snapshot) => {
+        sidebar.pinnedAgentIds = snapshot.pinnedAgentIds;
+      }),
+    );
     sidebar.connected = true;
     await sidebar.updateComplete;
     // Focus is ready before the dropdown's opening animation finishes.
@@ -143,11 +148,11 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
         if (event.target !== sidebar.querySelector(".sidebar-agent-menu")) {
           return;
         }
-        sidebar.removeEventListener("overlay-after-show", onShown);
+        sidebar.removeEventListener("overlay-after-show", onShown, true);
         resolve();
       };
-      sidebar.addEventListener("overlay-after-show", onShown);
-      onTestFinished(() => sidebar.removeEventListener("overlay-after-show", onShown));
+      sidebar.addEventListener("overlay-after-show", onShown, true);
+      onTestFinished(() => sidebar.removeEventListener("overlay-after-show", onShown, true));
     });
     sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")?.click();
     await sidebar.updateComplete;
@@ -161,6 +166,20 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar agent menu layout", 
     const { userEvent } = await import("vitest/browser");
     await userEvent.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(tiles[2]);
+    await userEvent.tab();
+    const pin = tiles[2]!.querySelector<HTMLButtonElement>(".sidebar-agent-menu__pin")!;
+    const currentPin = () =>
+      sidebar.querySelector<HTMLButtonElement>(
+        '[data-value="agent:release"] .sidebar-agent-menu__pin',
+      )!;
+    expect(document.activeElement).toBe(pin);
+    await userEvent.keyboard(" ");
+    await expect.poll(() => currentPin().getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(currentPin());
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(sidebar.querySelector('[data-value="agent:main"]'));
+    currentPin().click();
+    await expect.poll(() => currentPin().getAttribute("aria-pressed")).toBe("false");
     await expect
       .poll(() =>
         tiles.map((tile) => tile.classList.contains("sidebar-agent-menu__agent-switch--active")),

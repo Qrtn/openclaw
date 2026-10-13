@@ -51,6 +51,7 @@ export type SidebarDropdownProps = {
   onPointerEnter?: () => void;
   onPointerLeave?: () => void;
   panelStyle?: JSX.CSSProperties;
+  focusOnOpen?: boolean;
 };
 
 export function SidebarDropdown(params: SidebarDropdownProps): JSX.Element {
@@ -100,7 +101,7 @@ export function SidebarDropdown(params: SidebarDropdownProps): JSX.Element {
           overlay.surface.removeEventListener("pointerenter", enter);
           overlay.surface.removeEventListener("pointerleave", leave);
         };
-        handle.open();
+        overlay.request(true, params.focusOnOpen === false ? "none" : "first");
       }}
       tabFocusTarget={params.tabFocusTarget}
       onSelect={(item) => params.onSelect(item.id)}

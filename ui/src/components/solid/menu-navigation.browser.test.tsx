@@ -12,7 +12,7 @@ import {
   surface,
   trigger,
 } from "../../test-helpers/solid-menu.tsx";
-import { Menu, type MenuItem, type MenuProps } from "./menu.tsx";
+import { Menu, type MenuEntry, type MenuItem, type MenuProps } from "./menu.tsx";
 
 afterEach(cleanup);
 
@@ -22,7 +22,7 @@ describe("Solid menu navigation", () => {
     let pins = 0;
     const [revision, setRevision] = createSignal(0);
     mountMenu({
-      get items() {
+      get items(): MenuEntry[] {
         revision();
         return [
           { kind: "content", id: "search", content: <input data-search aria-label="Find agent" /> },
@@ -40,6 +40,7 @@ describe("Solid menu navigation", () => {
                     Alpha
                     <button
                       data-form-control
+                      tabindex="-1"
                       onClick={(event) => {
                         event.stopPropagation();
                         pins += 1;
@@ -65,13 +66,24 @@ describe("Solid menu navigation", () => {
     await openMenu();
     const group = surface().querySelector(".agent-list");
     const footer = item("Footer");
+    const alpha = surface().querySelector<HTMLElement>('[data-value="alpha"]')!;
+    alpha.focus();
     setRevision(1);
     flush();
     expect(surface().querySelector(".agent-list")).toBe(group);
     expect(item("Footer")).toBe(footer);
+    expect(document.activeElement).toBe(alpha);
     const search = surface().querySelector<HTMLInputElement>("input")!;
     search.focus();
     await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(alpha);
+    await userEvent.tab();
+    expect(document.activeElement).toBe(surface().querySelector("[data-form-control]"));
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(alpha);
+    await userEvent.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(search);
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
     expect(document.activeElement).toBe(item("Beta"));
     await userEvent.click(surface().querySelector<HTMLButtonElement>("[data-form-control]")!);
     expect(pins).toBe(1);
@@ -336,6 +348,8 @@ describe("Solid menu navigation", () => {
   it.each(["ltr", "rtl"] as const)("preserves sibling → Back → Down in %s", async (dir) => {
     mountMenu({ dir });
     await openMenu();
+    expect(trigger("people-assign").dataset.value).toBe("assign");
+    expect(trigger("people-move").dataset.value).toBe("move");
     await openMenu("people-assign");
     trigger("people-move").focus();
     await userEvent.keyboard(dir === "ltr" ? "{ArrowRight}" : "{ArrowLeft}");

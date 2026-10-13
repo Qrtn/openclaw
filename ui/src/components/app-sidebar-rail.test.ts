@@ -508,7 +508,7 @@ describe("personal navigation rail", () => {
     await vi.dynamicImportSettled();
     await sidebar.updateComplete;
     expect(sidebar.querySelector(".sidebar-agent-menu")).not.toBeNull();
-    expect(sidebar.querySelector('[value="agent:research"]')).not.toBeNull();
+    expect(sidebar.querySelector('[data-value="agent:research"]')).not.toBeNull();
     expect(sidebar.querySelector(".sidebar-brand")).toBeNull();
   });
 

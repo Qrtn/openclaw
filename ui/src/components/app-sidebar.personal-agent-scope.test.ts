@@ -144,12 +144,13 @@ it("keeps selected owners across agents and resumes the selected agent's own con
     )!;
     expect.soft(researchMenuItem.querySelector('[aria-label="Unread"]')).not.toBeNull();
     researchMenuItem.click();
-
-    expect.soft(onNavigate).toHaveBeenCalledWith(
-      "chat",
-      expect.objectContaining({
-        pathname: "/chat/research/00000002000040008000000000000000",
-      }),
+    await vi.waitFor(() =>
+      expect(onNavigate).toHaveBeenCalledWith(
+        "chat",
+        expect.objectContaining({
+          pathname: "/chat/research/00000002000040008000000000000000",
+        }),
+      ),
     );
 
     bindChatPageSession(context, rows[2]!.key);

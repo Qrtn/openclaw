@@ -616,7 +616,7 @@ suite.define(() => {
           };
           await page.mouse.move(389, 899);
           await expectSignals();
-          const action = headerLocator.locator('button[slot="trigger"]');
+          const action = headerLocator.locator(".sidebar-agent-roster__menu .oc-menu-trigger");
           await action.focus();
           await expectSignals();
           await evaluateControlUiContext(
