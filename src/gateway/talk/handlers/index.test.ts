@@ -2982,6 +2982,17 @@ describe("talk.client.toolCall handler", () => {
 
   it("links relay-owned agent consult runs so relay cancellation can abort them", async () => {
     const respond = vi.fn();
+    const readTranscript = vi
+      .spyOn(
+        await import("../../../config/sessions/session-transcript-anchor-read.js"),
+        "readSessionTranscriptAnchorsAsync",
+      )
+      .mockResolvedValueOnce({
+        anchors: [],
+        session: { sessionId: "session-main" },
+        watermark: { generation: "transcript-generation", maxSeq: 7 },
+      });
+    onTestFinished(() => readTranscript.mockRestore());
 
     await callTalkHandler("talk.client.toolCall", {
       params: {
@@ -2993,6 +3004,11 @@ describe("talk.client.toolCall handler", () => {
         args: { question: "What now?" },
       },
       respond,
+      context: {
+        getRuntimeConfig: () => ({}),
+        chatAbortControllers: new Map([["run-voice-1", { sessionId: "session-main" }]]),
+        logGateway: { warn: vi.fn() },
+      },
     });
 
     expect(mocks.registerTalkRealtimeRelayAgentRun).toHaveBeenCalledWith({
@@ -3001,6 +3017,7 @@ describe("talk.client.toolCall handler", () => {
       sessionKey: "agent:main:main",
       runId: "run-voice-1",
       callId: "call-1",
+      transcriptStart: { sessionId: "session-main", afterSeq: 7 },
       assertCurrent: expect.any(Function),
       registerVoice: expect.any(Function),
     });
