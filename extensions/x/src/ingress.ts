@@ -62,7 +62,7 @@ export function createXPublicationPreparation(params: {
           params.assertActive();
           authorization.assertCurrent();
           if (params.readConfig() !== cfg) {
-            throw new Error("X configuration changed before run admission");
+            throw new Error("X work-session publication policy changed; send a new mention.");
           }
         };
         assertCurrent();
