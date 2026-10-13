@@ -191,7 +191,9 @@ export function kickSessionEntryMaintenanceAfterWrite(
     if (identity) {
       unregister.push(
         observeSessionEntryMaintenanceAgeChanges(identity.key.slice(5), (change) => {
+          const previousFact = created.ageFact;
           created.ageFact = updateSessionEntryMaintenanceAgeFact(created.ageFact, change);
+          const invalidated = previousFact !== undefined && created.ageFact === undefined;
           if (!created.ageFact) {
             created.noCandidates = false;
           }
@@ -200,7 +202,7 @@ export function kickSessionEntryMaintenanceAfterWrite(
             ...change,
             previousEntry: previous ? previous.previousEntry : change.previousEntry,
           });
-          if (!change.previousEntry) {
+          if (!change.previousEntry || invalidated) {
             const preserved =
               change.entry.preserved ??
               shouldPreserveMaintenanceEntry({
@@ -211,14 +213,15 @@ export function kickSessionEntryMaintenanceAfterWrite(
             const fact = created.ageFact;
             const resume =
               !created.running &&
-              (created.noCandidates
-                ? !preserved
-                : fact?.entryCount !== undefined &&
-                  shouldRunSessionEntryMaintenance({
-                    entryCount: fact.entryCount,
-                    maxEntries: fact.maintenance.maxEntries,
-                    force: false,
-                  }));
+              (invalidated ||
+                (created.noCandidates
+                  ? !preserved
+                  : fact?.entryCount !== undefined &&
+                    shouldRunSessionEntryMaintenance({
+                      entryCount: fact.entryCount,
+                      maxEntries: fact.maintenance.maxEntries,
+                      force: false,
+                    })));
             if (!preserved) {
               created.noCandidates = false;
             }

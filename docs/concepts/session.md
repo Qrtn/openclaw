@@ -381,7 +381,8 @@ changes, so concurrent updates are reconsidered instead of overwritten. Activity
 on unrelated sessions and protection that has ended do not invalidate the plan.
 When an over-cap pass finds only durably protected entries, ordinary activity does not
 repeat that futile plan. New eligible entries, restored identities, lost entry
-protection, and changed policy reconsider it. Temporary protection from active
+protection, and changed policy reconsider it. Delivery cleanup resumes idle maintenance
+when it releases the session's remaining recovery protection. Temporary protection from active
 sessions, runtime providers, or recent activity does not suppress planning on
 ordinary writes; age deadlines and the periodic recheck still resume idle cleanup.
 If writes invalidate an automatic maintenance plan, its replacement waits for

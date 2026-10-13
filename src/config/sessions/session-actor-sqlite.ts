@@ -11,6 +11,10 @@ import { createSqliteWorkerTransferCollector } from "../../infra/sqlite-worker-t
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { publishRetainedSessionEntryChange } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 import { projectSessionSharingEntry } from "./session-accessor.sqlite-entry-cache.types.js";
+import {
+  captureSessionEntryMaintenanceAgeChange,
+  publishSessionEntryMaintenanceAgeChanges,
+} from "./session-accessor.sqlite-maintenance-age.js";
 import type {
   SessionActorAuthority,
   SessionActorAuthorityFacts,
@@ -201,6 +205,7 @@ export function createSqliteSessionActorExecutor(
     type Outcome = SessionActorOutcome<SessionActorPhaseResults[Phase]>;
     let native: NativeAdmission | undefined;
     let previousEntry: SessionActorAuthorityFacts["entry"];
+    let capturedPreviousEntry = false;
     let running: Promise<Outcome> | undefined;
     let committed: Extract<Outcome, { kind: "committed" }> | undefined;
     let candidate: unknown;
@@ -298,6 +303,19 @@ export function createSqliteSessionActorExecutor(
                       true,
                       entry,
                     );
+                    if (entry) {
+                      // Actor delivery settlement can release the last durable recovery claim.
+                      const change = captureSessionEntryMaintenanceAgeChange({
+                        sessionKey: target.sessionKey,
+                        entry,
+                        previousEntry,
+                      });
+                      if (!isDeepStrictEqual(change.entry, change.previousEntry)) {
+                        publishSessionEntryMaintenanceAgeChanges(target.database.physicalIdentity, [
+                          change,
+                        ]);
+                      }
+                    }
                   }
                   // Partial transcript publication precedes installation of the full actor replica.
                   publishCommittedSessionTranscriptReceipts(
@@ -367,8 +385,10 @@ export function createSqliteSessionActorExecutor(
         },
         authorize(authority, (admission, publication, stage, snapshot) => {
           native = admission;
-          if (stage === "transaction") {
+          // Compound phases and transfer frames carry later snapshots of the same transaction.
+          if (stage === "transaction" && !capturedPreviousEntry) {
             previousEntry = snapshot.entry;
+            capturedPreviousEntry = true;
           }
           if (isRecord(publication) && publication.kind === "session-actor-outcome") {
             transfer.accept(publication.transfer);

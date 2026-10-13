@@ -7,6 +7,8 @@ import {
   observeHostDataSql,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
+import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import * as logging from "../../logging/logger.js";
 import {
   markGatewayRestartDraining,
@@ -22,7 +24,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import * as databaseMaintenance from "../../state/openclaw-state-db-async-lifecycle.js";
-import { loadSessionEntry } from "./session-accessor.js";
+import { loadSessionEntry, loadTranscriptEvents } from "./session-accessor.js";
 import {
   deleteSessionEntryRows,
   writeSessionEntry,
@@ -171,6 +173,83 @@ function countPlanningPasses() {
       .filter((plan) => plan.kind === "maintenance-plan"),
   ).size;
 }
+
+it("resumes idle protected-store maintenance when delivery settlement releases its last claim", async ({
+  signal,
+}) => {
+  const { request, scope, storePath, updatedAt, archived } = createStore(86_400_000, sessionKey, {
+    workerMaintenance: true,
+  });
+  request.maintenanceConfig.maxEntries = 1;
+  const target = {
+    agentId: "main",
+    storePath,
+    sessionKey: "agent:main:delivery-maintenance-victim",
+    sessionId: "delivery-maintenance-victim",
+  };
+  runOpenClawAgentWriteTransaction((database) => {
+    writeSessionEntry(database, sessionKey, {
+      sessionId: "age-kick",
+      updatedAt,
+      modelSelectionLocked: true,
+    });
+    writeSessionEntry(database, target.sessionKey, {
+      sessionId: target.sessionId,
+      updatedAt,
+      pendingFinalDelivery: {
+        kind: "transport-only",
+        createdAt: updatedAt,
+        intentId: "maintenance-intent",
+        deliveries: [{ id: "maintenance-delivery", state: "prepared" }],
+      },
+    });
+  }, scope);
+  const manager = await SessionManager.openAsync(target, path.dirname(storePath));
+  const message = {
+    role: "user" as const,
+    content: "Synthetic input delivery-maintenance",
+    timestamp: 1,
+    idempotencyKey: "delivery-maintenance:user",
+  };
+  await manager.appendMessageAsync(message);
+  const settled = createDeferred();
+  const dispatch = vi.mocked(reclamationRun.runSqliteSessionReclamation);
+  const run = dispatch.getMockImplementation()!;
+  dispatch.mockImplementation(async (params) => {
+    const result = await run(params);
+    if (result.kind === "maintenance-plan" && result.value.durableNoCandidates === true) {
+      settled.resolve();
+    }
+    return result;
+  });
+  kickSessionEntryMaintenanceAfterWrite(request);
+  await withinTest(settled.promise, signal);
+  await yieldToEventLoop();
+  const protectedPasses = countPlanningPasses();
+  expect(loadSessionEntry(target)?.pendingFinalDelivery).toBeDefined();
+  await withinTest(
+    settlePendingFinalDelivery(
+      {
+        ...target,
+        kind: "pending-final",
+        intentId: "maintenance-intent",
+        deliveryId: "maintenance-delivery",
+      },
+      "delivered",
+      undefined,
+      { clearAfterSettled: {}, preserveActivity: true },
+    ),
+    signal,
+  );
+  expect(loadSessionEntry(target)?.pendingFinalDelivery).toBeUndefined();
+  await yieldToEventLoop();
+  await vi.advanceTimersByTimeAsync(1_001);
+  expect(countPlanningPasses()).toBeGreaterThan(protectedPasses);
+  await withinTest(archived, signal);
+  expect(loadSessionEntry(target)?.archiveReason).toBe("active-session-cap");
+  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+  expect((await loadTranscriptEvents(target)).at(-1)).toMatchObject({ message });
+});
 
 it.each(["unlock", "insert", "policy"] as const)(
   "backs off a protected over-cap store on activity and resumes after %s",
