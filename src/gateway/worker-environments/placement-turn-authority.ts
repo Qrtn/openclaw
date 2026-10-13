@@ -18,6 +18,7 @@ import { WorkerPlacementInventoryChangedError } from "./placement-inventory-chan
 import {
   affectsPlacementObservation,
   applyPlacementReadPublication,
+  hasPendingClaimPublication,
   hasPendingPublication,
   prepareCachedPlacementPreservationRead,
   preparePlacementRead,
@@ -421,11 +422,15 @@ export function capturePlacementReplicaRead(identity: DatabasePathIdentity) {
   };
 }
 
-/** Synchronous SDK reads consume committed writer receipts; cold reads use the async API. */
+/**
+ * Synchronous SDK reads consume committed writer receipts; cold reads use the async API.
+ * Like retained reads, only a pending claim hides the receipt: turn ACK/result writes overlap
+ * every worker turn and must not fail its synchronous placement checks.
+ */
 export function readPlacementReplica(identity: DatabasePathIdentity, sessionId: string) {
   const owner = owners.get(identity.key);
   const published = owner?.placements.get(sessionId);
-  if (!owner?.active || !published || hasPendingPublication(owner, sessionId)) {
+  if (!owner?.active || !published || hasPendingClaimPublication(owner, sessionId)) {
     return undefined;
   }
   return { placement: published.placement };

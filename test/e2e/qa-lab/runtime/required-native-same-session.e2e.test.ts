@@ -369,6 +369,16 @@ it.skipIf(process.platform === "win32")(
             messages: unknown[];
             pendingInputs: { items: Array<{ runId?: string; state: string; queued?: boolean }> };
           }>("chat.history", { sessionKey: key });
+        const reportRunFailure = () =>
+          record(
+            "required-native-dispatch-error",
+            gateway
+              .logs()
+              .split("\n")
+              .filter((line) =>
+                /workspace|skills|not allowed|POLICY_DENIED|agent failed|outcome=error/i.test(line),
+              ),
+          );
         const wait = (runId: string) => {
           const pending = operator!
             .request<AgentJobTerminalSnapshot>(
@@ -379,14 +389,7 @@ it.skipIf(process.platform === "win32")(
             .then((result) => {
               record("agent.wait-terminal", { runId, ...result });
               if (result.status !== "ok") {
-                console.info(
-                  "required-native-dispatch-error",
-                  gateway
-                    .logs()
-                    .split("\n")
-                    .filter((line) => /workspace|skills|not allowed|POLICY_DENIED/i.test(line))
-                    .join("\n"),
-                );
+                reportRunFailure();
                 observationFailure.reject(new Error("agent.wait: " + JSON.stringify(result)));
               }
               return result;
@@ -452,6 +455,12 @@ it.skipIf(process.platform === "win32")(
                 state: placement?.state,
                 reconciling: placement?.workspaceResultReconciling,
               });
+              if (event.phase === "error" || event.reason === "chat.dispatch-error") {
+                // A queued follow-up's execution run ID is known only at native HTTP entry.
+                // Fail on its published error instead of waiting for the test timeout.
+                reportRunFailure();
+                throw new Error(`${creation} ${timing} run failed before settlement`);
+              }
               if (placement?.workspaceResultReconciling) {
                 if (!sawPending) {
                   record("finishing-ACK-pending-publication", {

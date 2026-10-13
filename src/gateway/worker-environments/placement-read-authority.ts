@@ -15,6 +15,16 @@ export function hasPendingPublication(owner: PlacementAuthorityOwner, sessionId?
   return [...owner.pending].some((change) => affectsPlacementObservation(change, sessionId));
 }
 
+/** Claim writes can move the execution target; result, ACK, and journal writes cannot. */
+export function hasPendingClaimPublication(
+  owner: PlacementAuthorityOwner,
+  sessionId: string,
+): boolean {
+  return [...owner.pending].some(
+    (change) => change.kind === "claim" && change.sessionId === sessionId,
+  );
+}
+
 export function affectsPlacementObservation(change: ClaimChange, sessionId?: string): boolean {
   return (
     change.kind !== "tools" &&
@@ -125,13 +135,7 @@ export function retainSessionPlacementRead(
     },
     current(this: void) {
       assertUsable();
-      // Result, ACK, and journal writes leave this read's execution target unchanged.
-      if (
-        reader.revoked ||
-        [...owner.pending].some(
-          (change) => change.kind === "claim" && change.sessionId === sessionId,
-        )
-      ) {
+      if (reader.revoked || hasPendingClaimPublication(owner, sessionId)) {
         throw new Error(`Session ${sessionId} placement authority changed`);
       }
       return reader.placement;

@@ -504,8 +504,10 @@ are retired; the deprecated signatures remain until the next Plugin SDK major.
 
 `get` and `getMany` only consume committed in-process receipts. Cold or invalidated
 entries throw with migration guidance; an owner-published absence remains a valid
-result. The synchronous inventory and mutation methods always throw and never
-schedule work. Calls emit a warning once per plugin and capability family.
+result. A pending workspace result, ACK, or journal write keeps the last committed
+receipt readable; a pending claim write hides it until that write settles. The
+synchronous inventory and mutation methods always throw and never schedule work.
+Calls emit a warning once per plugin and capability family.
 
 Placement activation callbacks receive the committed active placement directly.
 Use that result for maintenance scheduling instead of reading it again. For final
