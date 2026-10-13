@@ -82,6 +82,7 @@ export type ChatProps = Omit<
     presented?: PresentationValue;
     historyState?: ChatState;
     startupStatus?: ChatRunStartupStatus | null;
+    environmentStartStatus?: import("../../../../packages/gateway-protocol/src/schema/environments.js").WorkerEnvironmentStartStatus;
     providerPolicyNotice?: ProviderPolicyNotice | null;
     providerReview?: ChatProviderReviewController;
     providerReviewRevision?: object;
@@ -233,7 +234,11 @@ export function createChatViewFrame(props: ChatProps) {
     pendingInputs: displayedPendingInputs,
     runActive: props.runActive === true,
     runWorking,
-    startupLabel: chatStartupStatusLabel(props.startupStatus, placementStartup),
+    startupLabel: chatStartupStatusLabel(
+      props.startupStatus,
+      placementStartup,
+      props.environmentStartStatus,
+    ),
     retryAt: props.startupStatus?.phase === "retrying" ? props.startupStatus.retryAt : undefined,
     failureActionsRunId: chatFailureRunId(props.runError, props.selectedSession),
     questionPrompts: props.gatewayQuestionPrompts,
