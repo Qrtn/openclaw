@@ -290,6 +290,9 @@ export function resolveNewSessionSubmitBlock(
         ),
     };
   }
+  if (place.deviceFolder && draft.attachmentDraft.attachments.length > 0) {
+    return { gate: "folder", reason: t("newSession.deviceFolderAttachmentsUnsupported") };
+  }
   if (!agents?.agentsList) {
     return rosterBlock();
   }

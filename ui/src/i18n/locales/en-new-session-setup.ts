@@ -16,6 +16,8 @@ const enNewSessionSetup = {
       "Existing device folders require a worker-turn runtime. Choose a compatible model/runtime or another workspace; your folder path is kept.",
     deviceFolderPathRequired:
       "Enter an absolute path to an existing folder on the selected device.",
+    deviceFolderAttachmentsUnsupported:
+      "Existing device folders cannot receive attachments. Remove them, or choose another workspace.",
     requiredWorkerHint: "Say what you’d like to work on.",
     requiredWorker: "Worker",
     requiredWorkerUnavailable:

@@ -6,6 +6,7 @@ import { NODE_WORKER_WORKSPACE_EXEC_COMMAND } from "../../infra/node-commands.js
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { NODE_WORKSPACE_VALIDATE_DEVICE_FOLDER_COMMAND } from "../../worker/node-workspace-protocol.js";
+import { captureGatewayDeviceRevocation } from "../device-revocation.js";
 import type {
   NodeWorkerSupervisorNodeProof,
   NodeWorkerSupervisorTransport,
@@ -207,6 +208,41 @@ test.each(["offline", "unsupported", "denied", "malformed", "disconnected"])(
       { key, deviceFolder: folder },
       controlUiClient,
     );
+    expect(result.ok).toBe(false);
+    expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
+  },
+);
+
+test.each(["caller", "device"] as const)(
+  "sessions.create persists nothing when the %s is revoked while the node validates",
+  async (revoked) => {
+    const { storePath } = await createSessionStoreDir();
+    let callerCurrent = true;
+    const validated = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (request) => {
+      const response = await validated(request);
+      if (revoked === "caller") {
+        callerCurrent = false;
+      } else {
+        isCurrent.mockReturnValue(false);
+      }
+      return response;
+    });
+    const key = `agent:main:dashboard:revoked-${revoked}`;
+    // The request owner may reject by response or by throwing its authority error.
+    const result = await directSessionReq(
+      "sessions.create",
+      { key, deviceFolder: folder },
+      {
+        ...controlUiClient,
+        hasCurrentClientAuthority: captureGatewayDeviceRevocation(
+          {},
+          { deviceId: "operator-device", role: "operator" },
+          () => callerCurrent,
+        ).isCurrent,
+      },
+    ).catch((error: unknown) => ({ ok: false, error: { message: String(error) } }));
+    expect(invoke).toHaveBeenCalledOnce();
     expect(result.ok).toBe(false);
     expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
   },

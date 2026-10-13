@@ -13,6 +13,7 @@ import type { MediaFact } from "../../media/media-facts.js";
 import { parseInboundMediaUri } from "../../media/media-reference.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { SkillSnapshot } from "../../skills/types.js";
+import { DEVICE_FOLDER_ATTACHMENTS_UNSUPPORTED } from "../../worker/node-workspace-protocol.js";
 import { resolveChatAttachmentMaxBytes } from "../chat-attachment-policy.js";
 import {
   discardPreparedInboundMedia,
@@ -248,6 +249,13 @@ export async function prepareChatSendAttachments(params: {
     explicitOriginTargetsPlugin = explicitOriginTargets.plugin;
 
     if (normalizedAttachments.length > 0) {
+      // Refuse before parsing or persistence; device folders cannot receive staged files.
+      if (
+        (admission.initialSessionEntry ?? admission.admittedSessionEntry ?? session.entry)
+          ?.deviceFolder
+      ) {
+        throw new Error(DEVICE_FOLDER_ATTACHMENTS_UNSUPPORTED);
+      }
       const prepareAttachmentsStartedAtMs = performance.now();
       await measureDiagnosticsTimelineSpan(
         "gateway.chat_send.prepare_attachments",

@@ -131,6 +131,10 @@ export type NodeWorkerWorkspaceExecResult = SpawnResult & {
   process?: NodeWorkerWorkspaceProcessResult;
 };
 
+/** Device folders cannot receive staged files; chat ingress and worker media preparation refuse them. */
+export const DEVICE_FOLDER_ATTACHMENTS_UNSUPPORTED =
+  "Attachments are not supported in sessions that use an existing device folder. Send the message without attachments.";
+
 /** User-owned folders only run commands; ingress parsing and direct node execution share this rule. */
 export function assertNodeWorkspaceDeviceFolderCommand(input: NodeWorkerWorkspaceExecInput): void {
   if (
