@@ -1,4 +1,3 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
 import { readSessionTranscriptBoundedMessageTailPage } from "../config/sessions/session-accessor.sqlite-active-events.js";
@@ -12,8 +11,7 @@ import {
 } from "../config/sessions/session-transcript-projection-error.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { projectSessionDisplayMessage } from "../gateway/session-display-projection.js";
-import { readSessionTranscriptRunId } from "../sessions/transcript-events.js";
+import { readSessionTranscriptTerminalModel } from "../sessions/transcript-terminal-model.js";
 import { resolveActiveFallbackState } from "./fallback-notice-state.js";
 
 type SessionTerminalModel = { modelProvider: string; model: string };
@@ -159,16 +157,8 @@ export function selectSessionTerminalFallbackModel(
   entry: InternalSessionEntry,
   event: unknown,
 ): SessionTerminalModel | undefined {
-  const message = asOptionalRecord(asOptionalRecord(event)?.message);
-  if (
-    (message?.stopReason === "stop" || message?.stopReason === "length") &&
-    readSessionTranscriptRunId(message) === entry.lastRunId &&
-    message.display !== false &&
-    projectSessionDisplayMessage(message, { view: "model-context" })?.role === "assistant" &&
-    typeof message.provider === "string" &&
-    typeof message.model === "string"
-  ) {
-    return { modelProvider: message.provider, model: message.model };
-  }
-  return undefined;
+  const terminal = readSessionTranscriptTerminalModel(event);
+  return terminal && terminal.runId === entry.lastRunId
+    ? { modelProvider: terminal.modelProvider, model: terminal.model }
+    : undefined;
 }

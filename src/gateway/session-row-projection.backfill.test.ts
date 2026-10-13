@@ -137,6 +137,41 @@ it("refreshes streaming previews without rematerializing unchanged rows", async 
   });
 });
 
+it("reuses batch transcript facts across row-owner restarts", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = { agents: { entries: { main: {} } } };
+    setRuntimeConfigSnapshot(cfg);
+    const target = { agentId: "main", sessionKey: "agent:main:batch", sessionId: "batch" };
+    replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const backfill = vi.spyOn(transcriptBackfill, "backfillSessionRowTranscriptFields");
+    for (const content of ["First batch", "Second batch"]) {
+      await persistSessionTranscriptTurn(target, {
+        messages: [
+          { message: { role: "user", content: "New request" } },
+          { message: { role: "assistant", content } },
+        ],
+        touchSessionEntry: false,
+      });
+      const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+      try {
+        await projection.ensureMaterialized();
+        expect(
+          projection.snapshot(
+            { agentId: "main", key: target.sessionKey },
+            {
+              includeLastMessage: true,
+            },
+          ).row?.lastMessagePreview,
+        ).toBe(content);
+        await nextTurn();
+        expect(backfill).not.toHaveBeenCalled();
+      } finally {
+        projection.dispose();
+      }
+    }
+  });
+});
+
 it("refreshes committed metadata and lifecycle marks during a transcript window", async () => {
   await withStreamingProjection(async ({ projection, target, query, append }) => {
     await append("Leading update");
@@ -544,7 +579,7 @@ it("does not adopt a background catalog after disposal", async () => {
   });
 });
 
-it.for(["ready", "readiness failure", "metadata during readiness"])(
+it.for(["ready", "readiness failure"])(
   "continues backfill as the previous batch settles (%s)",
   async (mode, { signal }) => {
     const reads = vi
@@ -564,12 +599,9 @@ it.for(["ready", "readiness failure", "metadata during readiness"])(
       ]),
     );
     const published: string[] = [];
-    const paused = createDeferredCore(),
-      resume = createDeferredCore();
+    const paused = createDeferredCore();
     const completed = createDeferredCore();
-    let rejectNext = mode === "readiness failure",
-      dirtyNext = mode === "metadata during readiness";
-    let materialized = true;
+    let rejectNext = mode === "readiness failure";
     const backfill = createSessionRowProjectionBackfill({
       ready: async () => {
         if (rejectNext) {
@@ -577,18 +609,9 @@ it.for(["ready", "readiness failure", "metadata during readiness"])(
           paused.resolve();
           throw new Error("Row facts temporarily unavailable");
         }
-        if (dirtyNext && reads.mock.calls.length > 0) {
-          dirtyNext = false;
-          queueMicrotask(() => {
-            materialized = false;
-            paused.resolve();
-          });
-        } else if (!materialized) {
-          await resume.promise;
-        }
       },
       read: (id) => [...rows.values()].find((row) => identity(row) === id),
-      current: () => materialized,
+      current: () => true,
       publish(row) {
         published.push(row.key);
         if (row.key === "first") {
@@ -606,17 +629,14 @@ it.for(["ready", "readiness failure", "metadata during readiness"])(
         await nextTurn();
         const row = rows.get("first")!;
         row.entry = { ...row.entry, displayName: "Renamed while waiting" };
-        materialized = true;
         backfill.prepare(row, undefined);
-        resume.resolve();
         await nextTurn();
         expect(published).toContain("first");
       }
       await withinTest(completed.promise, signal);
       expect(published).toEqual(["first", "second"]);
-      expect(reads).toHaveBeenCalledTimes(mode === "metadata during readiness" ? 3 : 2);
+      expect(reads).toHaveBeenCalledTimes(2);
     } finally {
-      resume.resolve();
       backfill.dispose();
     }
   },
@@ -663,7 +683,6 @@ it("backfills terminal fallback models and clears previews when the newest messa
     const projection = await createSessionRowProjection({ cfg });
     const query = { agentId: "main", key: target.sessionKey };
     try {
-      expect(projection.snapshot(query).row?.activeModel).toBeUndefined();
       const expected = {
         activeModelProvider: "unit-test",
         activeModel: "fallback",
@@ -671,13 +690,13 @@ it("backfills terminal fallback models and clears previews when the newest messa
       };
       await withinTest(initial, signal);
       expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject(expected);
-      let reads = backfill.mock.calls.length;
+      expect(backfill).not.toHaveBeenCalled();
       for (const changed of [{ model: "selected" }, { modelProvider: "recorded-provider" }]) {
         const published = observeSessionRowBackfill([target.sessionKey]);
         replaceSessionEntrySync(target, { ...loadSessionEntry(target)!, ...changed });
         await projection.ensureMaterialized();
         await nextTurn();
-        expect(backfill.mock.calls.length).toBe(++reads);
+        expect(backfill).not.toHaveBeenCalled();
         await withinTest(published, signal);
         expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject(
           expected,

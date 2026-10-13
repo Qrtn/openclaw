@@ -208,12 +208,7 @@ describe("committed session mutation authorization", () => {
               warm.authorization!.assertCurrent();
             }
             expect(queries.queries).toHaveLength(0);
-            // Display backfill runs independently of the admission's worker reads.
-            expect(
-              messages.mock.calls.filter(
-                ([message]) => message.input?.kind !== "session-row-backfill",
-              ),
-            ).toEqual([]);
+            expect(messages).not.toHaveBeenCalled();
             if (resident) {
               await expect(
                 warm.authorization!.withCurrent!(() => Promise.resolve()),

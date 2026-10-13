@@ -25,7 +25,10 @@ import {
 } from "./server-methods/sessions-read-cache.test-support.js";
 import * as projectionWork from "./session-projection-work.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
-import { observeSessionRowBackfill } from "./session-row-backfill.test-support.js";
+import {
+  clearStoredSessionRowTranscriptForTest,
+  observeSessionRowBackfill,
+} from "./session-row-backfill.test-support.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import * as records from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
@@ -110,7 +113,7 @@ function holdBackfillPublication(signal?: AbortSignal) {
   };
 }
 
-it("publishes read-only transcript previews without acquiring stored row facts again", async () => {
+it("publishes legacy transcript previews without acquiring stored row facts again", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = { agents: { entries: { main: {} } } };
     setRuntimeConfigSnapshot(cfg);
@@ -143,6 +146,7 @@ it("publishes read-only transcript previews without acquiring stored row facts a
           ),
         ),
     );
+    clearStoredSessionRowTranscriptForTest(scope);
     const backfill = holdBackfillPublication();
     const releaseForeground = retainSessionListForegroundWork();
     let projection: Awaited<ReturnType<typeof createSessionRowProjection>> | undefined;
@@ -283,6 +287,7 @@ it("reuses an unknown preview until a committed transcript watermark changes", a
       touchSessionEntry: false,
       updateMode: "none",
     });
+    clearStoredSessionRowTranscriptForTest(scope);
     const initial = observeSessionRowBackfill([scope.sessionKey]);
     const backfill = vi.spyOn(transcriptBackfill, "backfillSessionRowTranscriptFields");
     const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
@@ -343,6 +348,7 @@ it("keeps a committed append preview when an older background read finishes", as
       touchSessionEntry: false,
       updateMode: "none",
     });
+    clearStoredSessionRowTranscriptForTest(scope);
     const backfill = holdBackfillPublication();
     const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
     try {
@@ -402,6 +408,7 @@ it("keeps pending Worker metadata, membership, and summary facts across optional
       updateMode: "none",
     });
     const watermark = sessions.readSessionTranscriptWatermark(scope);
+    clearStoredSessionRowTranscriptForTest(scope);
     const backfill = holdBackfillPublication(signal);
     const captured = createDeferredCore();
     const release = createDeferredCore();
@@ -512,7 +519,7 @@ it("keeps pending Worker metadata, membership, and summary facts across optional
   return run;
 });
 
-it("gives an in-flight Gateway request priority before starting read-only previews", async () => {
+it("gives an in-flight Gateway request priority before starting legacy preview backfill", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     resetGatewayWorkAdmission();
     const cfg = { agents: { entries: { main: {} } } };
@@ -529,6 +536,7 @@ it("gives an in-flight Gateway request priority before starting read-only previe
       touchSessionEntry: false,
       updateMode: "none",
     });
+    clearStoredSessionRowTranscriptForTest(scope);
     const entered = createDeferredCore();
     const response = createDeferredCore();
     const backgroundWaiting = createDeferredCore();
