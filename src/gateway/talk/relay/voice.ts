@@ -330,18 +330,21 @@ export function closeRelayVoiceSession(
         physicalSource: captureRelayVoiceSessionSource(session),
       });
       try {
-        const config = session.voiceConfig ?? session.context.getRuntimeConfig();
-        await closeRelayVoiceSessionRecord(
-          {
-            agentId,
-            sessionKey,
-            voiceSessionId: session.id,
-            config,
-          },
-          writer,
-        );
-        if (disposition === "detach") {
-          await withRelayTranscriptRetries(() => revealUnspokenRelayAnswers(session, writer));
+        try {
+          if (disposition === "detach") {
+            await withRelayTranscriptRetries(() => revealUnspokenRelayAnswers(session, writer));
+          }
+        } finally {
+          const config = session.voiceConfig ?? session.context.getRuntimeConfig();
+          await closeRelayVoiceSessionRecord(
+            {
+              agentId,
+              sessionKey,
+              voiceSessionId: session.id,
+              config,
+            },
+            writer,
+          );
         }
       } finally {
         await writer.release();

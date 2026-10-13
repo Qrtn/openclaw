@@ -100,9 +100,9 @@ describe("realtime relay voice transcript persistence", () => {
       .mockImplementation(() => ({ source, release: () => Promise.resolve() }));
   });
 
-  it.each([false, true])(
-    "settles detached answer reconciliation (transient=%s)",
-    async (transient) => {
+  it.each(["transient read", "persistent read", "voice close"])(
+    "settles detached answer recovery (%s)",
+    async (failureKind) => {
       const { session } = createRelaySession();
       session.voiceSessionCreated = true;
       session.consultTranscripts = new Map([
@@ -119,12 +119,15 @@ describe("realtime relay voice transcript persistence", () => {
       const read = vi
         .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
         .mockRejectedValue(failure);
-      if (transient) {
+      if (failureKind === "transient read") {
         read.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+      } else if (failureKind === "voice close") {
+        read.mockResolvedValue(undefined);
+        voiceSessionMocks.closeRelayVoiceSessionRecord.mockRejectedValue(failure);
       }
       try {
         const closing = closeRelayVoiceSession(session, "detach");
-        if (transient) {
+        if (failureKind === "transient read") {
           await expect(closing).resolves.toBeUndefined();
           expect(session.context.logGateway.warn).not.toHaveBeenCalled();
         } else {
@@ -133,7 +136,10 @@ describe("realtime relay voice transcript persistence", () => {
             "realtime relay voice session close failed: Answer reconciliation read failed",
           );
         }
-        expect(read).toHaveBeenCalledTimes(transient ? 2 : 3);
+        expect(read).toHaveBeenCalledTimes(
+          failureKind === "transient read" ? 2 : failureKind === "persistent read" ? 3 : 1,
+        );
+        expect(voiceSessionMocks.closeRelayVoiceSessionRecord).toHaveBeenCalledOnce();
         expect(release).toHaveBeenCalledOnce();
       } finally {
         read.mockRestore();
