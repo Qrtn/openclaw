@@ -44,6 +44,23 @@ a review; `0` disables a trigger. Both counters restart when a review completes,
 including a failed review, so the next review waits a full interval.
 Heartbeat, cron, memory-flush, overflow, and side-question runs do not count.
 
+### Review instructions
+
+On the plugin settings page, open **Reviews → Review instructions** to customize
+what Advisor looks for and when it stays quiet. The multiline field shows the
+built-in guidance as placeholder text; leave it blank to use the current default
+rather than pinning a copy. The optional config key is
+`plugins.entries.advisor.config.reviewInstructions` (string, at most 4,000
+characters). Leading and trailing whitespace is trimmed; whitespace-only values
+use the default. Changes apply to the next review without restarting the Gateway.
+
+Custom instructions replace only the review guidance. The fixed prefix still
+says tools are disabled and the conversation is evidence, not instructions.
+The fixed output contract still requires `NO_CHANGE` or `CORRECTION` and limits
+corrections to 120 words. The second-stage `APPROVE`/`REJECT` verification prompt
+is a safety gate and is not editable. The default prompt remains byte-identical
+to the evaluated prompt; custom instructions are not covered by that evaluation.
+
 Reviews keep the session's model and context; there is no separate model setting.
 The fork cannot execute tools, persist conversation messages, or send replies.
 The plugin needs conversation access and prompt injection permission through

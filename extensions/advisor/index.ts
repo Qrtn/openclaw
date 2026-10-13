@@ -1,10 +1,10 @@
 import { definePluginEntry, type PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createAdvisorController, type AdvisorSchedule } from "./src/controller.js";
 import {
+  buildReviewMessage,
   DELIVERY_PREFIX,
   parseReviewOutput,
   parseVerificationOutput,
-  REVIEW_MESSAGE,
   REVIEW_TIMEOUT_MS,
   VERIFY_MESSAGE,
 } from "./src/review.js";
@@ -74,7 +74,10 @@ export default definePluginEntry({
             );
           }
         };
-        const draft = parseReviewOutput(await ask("review", REVIEW_MESSAGE));
+        const config = api.runtime.config.current().plugins?.entries?.advisor?.config;
+        const draft = parseReviewOutput(
+          await ask("review", buildReviewMessage(config?.reviewInstructions)),
+        );
         if (!draft) {
           return null;
         }
