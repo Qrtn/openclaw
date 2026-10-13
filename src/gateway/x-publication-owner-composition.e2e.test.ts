@@ -44,6 +44,8 @@ import * as channelOutbound from "../plugin-sdk/channel-outbound.js";
 import * as ssrfRuntime from "../plugin-sdk/ssrf-runtime.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import {
+  getPluginRecordRegistry,
+  isPluginRecordActive,
   markPluginRegistryActive,
   markPluginRegistryRetired,
 } from "../plugins/registry-lifecycle.js";
@@ -382,9 +384,12 @@ describe("X publication production-owner composition", () => {
       }
       if (creating && activeCase === "owner-retired" && !ownerRetiredInCatalogWait) {
         ownerRetiredInCatalogWait = true;
-        // Retire the real registry/ingress owner, not a fabricated publication guard.
-        // This is the final case: its runtime must never be revived for another turn.
-        markPluginRegistryRetired(builder.registry);
+        // The Gateway fixture adopts this record into its retained registry.
+        // Retire that current owner, not the builder registry it no longer owns.
+        const ownerRegistry = getPluginRecordRegistry(builder.registry, record);
+        expect(isPluginRecordActive(ownerRegistry, record), activeCase).toBe(true);
+        markPluginRegistryRetired(ownerRegistry);
+        expect(isPluginRecordActive(builder.registry, record), activeCase).toBe(false);
       }
       return snapshot;
     };
@@ -745,13 +750,29 @@ describe("X publication production-owner composition", () => {
             await scheduling.close();
           }
         }
+        if (kind === "owner-retired") {
+          expect(ownerRetiredInCatalogWait, kind).toBe(true);
+          expect(
+            creationRequests.filter((request) => request.kind === kind),
+            kind,
+          ).toHaveLength(1);
+        }
+        // Check the durable effect before delivery, so a reply failure cannot hide a grant.
+        expect(rows(), kind).toHaveLength(1);
+        expect(
+          rows().filter(({ entry }) => resolveSessionPublicShare(entry)),
+          kind,
+        ).toHaveLength(1);
+        expect(
+          rows().filter(({ entry }) => entry.parentSessionKey === "agent:main:x:group:" + rootId),
+          kind,
+        ).toHaveLength(kind === "allowed" ? 1 : 0);
         if (kind === "author-revoked") {
           expect(networkCase.replies, kind).toEqual([]);
         } else if (kind === "owner-retired") {
-          // Registry retirement blocks new publication, but an admitted plugin
-          // invocation may finish. The unchanged X author can receive only this
-          // harmless failure reply, not a child-session link or successful result.
-          expect(networkCase.replies, kind).toEqual([deniedWorkSessionReply]);
+          // Retirement may reject delivery or let the admitted invocation finish
+          // its harmless failure reply. Neither outcome may expose a public link.
+          expect([[], [deniedWorkSessionReply]], kind).toContainEqual(networkCase.replies);
         } else {
           expect(networkCase.replies, kind).toHaveLength(1);
         }
@@ -845,16 +866,6 @@ describe("X publication production-owner composition", () => {
             });
           }
         }
-        // No rejected request may leave even a private/orphaned child row.
-        expect(rows(), kind).toHaveLength(1);
-        expect(
-          rows().filter(({ entry }) => resolveSessionPublicShare(entry)),
-          kind,
-        ).toHaveLength(1);
-        expect(
-          rows().filter(({ entry }) => entry.parentSessionKey === "agent:main:x:group:" + rootId),
-          kind,
-        ).toHaveLength(kind === "allowed" ? 1 : 0);
       }
     } finally {
       channel.inbound.dispatch = originalDispatch;
