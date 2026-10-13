@@ -3,6 +3,7 @@ import { EventEmitter, once } from "node:events";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { requireWorkspaceResultGit } from "../gateway/worker-environments/workspace-result-git.js";
 import {
   onDiagnosticEvent,
   resetDiagnosticEventsForTest,
@@ -142,6 +143,10 @@ describe("child-process spawn diagnostics", () => {
       executeGitCommandBuffered(process.cwd(), ["--version"], { operation: "publication" }),
       executeGitCommand(process.cwd(), ["--version"], { lowerPriority: true }),
       once(spawnProcess("git", ["--version"], { stdio: "ignore" }), "close"),
+      requireWorkspaceResultGit(process.cwd(), ["--version"]),
+      withGitProcessOperation("workspace.result-cleanup", () =>
+        requireWorkspaceResultGit(process.cwd(), ["--version"]),
+      ),
     ]);
     now = 59_999;
     emitChildProcessSpawnSample();
@@ -156,15 +161,16 @@ describe("child-process spawn diagnostics", () => {
           count: 2,
           intervalMs: 90_000,
         }),
-        ...["project.clone", "publication"].map((operation) =>
-          expect.objectContaining({ family: "git", operation, count: 1, intervalMs: 90_000 }),
+        ...["project.clone", "publication", "workspace.result", "workspace.result-cleanup"].map(
+          (operation) =>
+            expect.objectContaining({ family: "git", operation, count: 1, intervalMs: 90_000 }),
         ),
         expect.objectContaining({ family: "git", operation: "unscoped.version", count: 2 }),
       ]),
     );
     now = 150_000;
     emitChildProcessSpawnSample();
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(6);
   }
 
   it(

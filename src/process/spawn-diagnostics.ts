@@ -80,8 +80,9 @@ function unscopedGitOperation(args: readonly string[]): string {
 export function withGitProcessOperation<T>(
   operation: GitProcessOperation | undefined,
   run: () => T,
+  mode: "override" | "default" = "override",
 ): T {
-  return operation === undefined
+  return operation === undefined || (mode === "default" && gitOperation.getStore() !== undefined)
     ? run()
     : gitOperation.run(gitOperations.has(operation) ? operation : "unknown", run);
 }

@@ -78,14 +78,14 @@ export async function withWorktreeGitConfig<T>(
     guard.beforeRun?.();
   };
   check();
-  const discovery: Parameters<typeof runGit>[2] = { ...guard, operation: "worktree.config" };
+  const configOptions: Parameters<typeof runGit>[2] = { ...guard, operation: "worktree.config" };
   const common = path.resolve(
     cwd,
     normalizeGitPathForFilesystem(
-      await requireGit(cwd, ["rev-parse", "--git-common-dir"], discovery),
+      await requireGit(cwd, ["rev-parse", "--git-common-dir"], configOptions),
     ),
   );
-  const head = await requireGit(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], discovery);
+  const head = await requireGit(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], configOptions);
   if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(head)) {
     throw new Error("Unsupported Git object format");
   }
@@ -93,7 +93,7 @@ export async function withWorktreeGitConfig<T>(
   const storage = await runGit(
     cwd,
     ["config", "--local", "--get", "extensions.refStorage"],
-    discovery,
+    configOptions,
   );
   if (storage.code !== 0 && storage.code !== 1) {
     throw commandError("git config refStorage", storage);
@@ -111,7 +111,7 @@ export async function withWorktreeGitConfig<T>(
       "--get-regexp",
       "^core\\.(symlinks|ignorecase|precomposeunicode|excludesfile|autocrlf|eol|sparsecheckout|sparsecheckoutcone)$",
     ],
-    discovery,
+    configOptions,
   );
   if (settings.code !== 0 && settings.code !== 1) {
     throw commandError("git config layout", settings);
@@ -175,7 +175,7 @@ export async function withWorktreeGitConfig<T>(
       await requireGit(
         cwd,
         ["config", "--file", path.join(directory, "config"), key, value],
-        guard,
+        configOptions,
       );
     }
     const optionsFor = async <Options extends GitConfigOptions>(

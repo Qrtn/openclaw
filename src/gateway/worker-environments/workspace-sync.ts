@@ -119,7 +119,11 @@ export function createWorkerWorkspaceActions(
   };
 
   const runTask = (argv: string[], opts: CommandOptions) =>
-    withGitProcessOperation("workspace.sync", () => track(options.runner.run(argv, opts)));
+    withGitProcessOperation(
+      "workspace.sync",
+      () => track(options.runner.run(argv, opts)),
+      "default",
+    );
 
   const runRsync = (
     prepared: PreparedWorkerSsh,

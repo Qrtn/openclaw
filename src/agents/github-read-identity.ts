@@ -92,13 +92,16 @@ export async function runGitHubIdentityCommand(
   cwd?: string,
   timeoutMs = GITHUB_IDENTITY_COMMAND_TIMEOUT_MS,
 ) {
-  return await withGitProcessOperation("github.identity", () =>
-    runCommandBuffered(argv, {
-      env: env ? { ...env } : {},
-      cwd,
-      timeoutMs,
-      maxOutputBytes: GITHUB_IDENTITY_OUTPUT_LIMIT_BYTES,
-    }),
+  return await withGitProcessOperation(
+    "github.identity",
+    () =>
+      runCommandBuffered(argv, {
+        env: env ? { ...env } : {},
+        cwd,
+        timeoutMs,
+        maxOutputBytes: GITHUB_IDENTITY_OUTPUT_LIMIT_BYTES,
+      }),
+    "default",
   );
 }
 
