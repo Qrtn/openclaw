@@ -1,10 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
-import { readSessionTranscriptBoundedMessageTailPage } from "../config/sessions/session-accessor.sqlite-active-events.js";
-import type {
-  SessionTranscriptReadScope,
-  TranscriptEvent,
-} from "../config/sessions/session-accessor.types.js";
+import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.types.js";
 import {
   isSessionTranscriptProjectionUnavailableError,
   SessionTranscriptStorageUnavailableError,
@@ -107,40 +103,6 @@ async function readSessionTerminalFallbackModelAsync(params: {
       { maxBytes: 256 * 1024, maxMessages: 1, offset: 0, readOnly: true },
     );
     return selectSessionTerminalFallbackModel(params.sessionEntry, page.events[0]?.event);
-  } catch (error) {
-    if (
-      !isSessionTranscriptProjectionUnavailableError(error) &&
-      !(error instanceof SessionTranscriptStorageUnavailableError)
-    ) {
-      throw error;
-    }
-  }
-  return undefined;
-}
-
-/** Storage readers prepare terminal facts; the host retains runtime alias policy. */
-export function readSessionTerminalFallbackModel(
-  params: SessionFallbackSource & { terminalEvent?: TranscriptEvent },
-): SessionTerminalModel | undefined {
-  const entry = params.sessionEntry;
-  if (
-    !params.sessionScope?.sessionKey ||
-    !entry?.sessionId ||
-    entry.status !== "done" ||
-    !entry.lastRunId ||
-    !entry.fallbackNotice
-  ) {
-    return undefined;
-  }
-  if (params.terminalEvent !== undefined) {
-    return selectSessionTerminalFallbackModel(entry, params.terminalEvent);
-  }
-  try {
-    const page = readSessionTranscriptBoundedMessageTailPage(
-      { ...params.sessionScope, sessionId: entry.sessionId },
-      { maxBytes: 256 * 1024, maxMessages: 1, offset: 0, readOnly: true },
-    );
-    return selectSessionTerminalFallbackModel(entry, page.events[0]?.event);
   } catch (error) {
     if (
       !isSessionTranscriptProjectionUnavailableError(error) &&
