@@ -2982,18 +2982,6 @@ describe("talk.client.toolCall handler", () => {
 
   it("links relay-owned agent consult runs so relay cancellation can abort them", async () => {
     const respond = vi.fn();
-    const readTranscript = vi
-      .spyOn(
-        await import("../../../config/sessions/session-entry-read-runtime.js"),
-        "withSessionEntryReadOnlyInWorker",
-      )
-      .mockImplementationOnce(async (_scope, _assertCurrent, consume) =>
-        consume(
-          { ok: true, value: { sessionId: "session-main", updatedAt: 0 } },
-          { kind: "file", assertCurrent() {} },
-        ),
-      );
-    onTestFinished(() => readTranscript.mockRestore());
 
     await callTalkHandler("talk.client.toolCall", {
       params: {
@@ -3018,7 +3006,7 @@ describe("talk.client.toolCall handler", () => {
       sessionKey: "agent:main:main",
       runId: "run-voice-1",
       callId: "call-1",
-      transcriptSession: { sessionId: "session-main", lifecycleRevision: undefined },
+      transcriptSessionId: "session-main",
       assertCurrent: expect.any(Function),
       registerVoice: expect.any(Function),
     });

@@ -9,7 +9,6 @@ import {
   getCommandSenderAuthority,
   withCommandSenderAuthority,
 } from "../../auto-reply/command-sender-authority.js";
-import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { normalizeTalkSection } from "../../config/talk.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -178,33 +177,13 @@ export async function startTalkRealtimeAgentConsult(
             if (!chat) {
               throw new Error("Realtime relay agent run is not registered");
             }
-            const transcriptSession = await withSessionEntryReadOnlyInWorker(
-              {
-                agentId: params.sessionTarget.agentId,
-                sessionKey: params.sessionTarget.canonicalKey,
-                storePath: params.sessionTarget.storePath,
-              },
-              assertCurrent,
-              async (read) => {
-                if (!read.ok) {
-                  throw read.error;
-                }
-                if (read.value?.sessionId !== chat.sessionId) {
-                  throw new Error("Realtime relay transcript changed before agent dispatch");
-                }
-                return {
-                  sessionId: chat.sessionId,
-                  lifecycleRevision: read.value.lifecycleRevision,
-                };
-              },
-            );
             relayRegistration = await registerTalkRealtimeRelayAgentRun({
               relaySessionId: params.relaySessionId,
               connId: params.connId,
               sessionKey: params.sessionTarget.canonicalKey,
               runId,
               callId: params.callId,
-              transcriptSession,
+              transcriptSessionId: chat.sessionId,
               assertCurrent: assertWorkAdmissionCurrent,
               registerVoice: async (assertRelayCurrent, physicalSource, onRegistered) => {
                 await params.onRunStarted(runId, {
