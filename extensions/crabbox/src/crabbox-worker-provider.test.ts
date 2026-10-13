@@ -675,7 +675,7 @@ describe("Crabbox worker provider", () => {
         { ...PROFILE, setup: "install-node", setupSecrets: SETUP_SECRETS },
         OPERATION_ID,
       ),
-    ).rejects.toThrow("update Crabbox to 0.76.0 or newer");
+    ).rejects.toThrow("update Crabbox to 0.77.0 or newer");
     expect(runCommand).toHaveBeenCalledOnce();
     expect(runCommand.mock.calls[0]?.[0]).toEqual([SIBLING_BINARY, "egress", "run", "--help"]);
     expect(secretEgressRuntime.withSetupSecretEgress).not.toHaveBeenCalled();

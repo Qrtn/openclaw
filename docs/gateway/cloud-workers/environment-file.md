@@ -64,7 +64,7 @@ substitutes secrets only at their exact bound HTTPS hosts, through Crabbox nativ
 egress on the owned coordinator Linux lease. This covers preparation and
 post-create/start, including cold profiles with snapshots disabled. A known
 machine class is required to prepare the protected repository workspace.
-Crabbox 0.76.0 or newer and its matching helper are required; missing support
+Crabbox 0.77.0 or newer and its matching helper are required; missing support
 fails visibly with no plaintext fallback. Detached startup processes lose
 protected access when the lifecycle command finishes.
 

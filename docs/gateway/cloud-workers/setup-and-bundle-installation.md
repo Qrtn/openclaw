@@ -40,7 +40,7 @@ Plain HTTP downloads, including Ubuntu's default apt mirrors, go directly from
 the lease and never receive substituted secrets. The runner unsets inherited
 `HTTP_PROXY` and `http_proxy` values so they cannot redirect that traffic.
 
-This requires an exclusively owned coordinator Linux lease and Crabbox 0.76.0 or
+This requires an exclusively owned coordinator Linux lease and Crabbox 0.77.0 or
 newer with its matching egress runtime helper. Missing support, unavailable proxy,
 unbound store entries, and unmapped repository requests fail visibly before
 repository code runs. There is no plaintext fallback. No-secret jobs keep their

@@ -7,7 +7,7 @@ read_when: "A cloud dispatch, move, stop, or publication failed and you need the
 Symptoms you may see when dispatching to or running on a cloud worker, and the check that resolves each one.
 
 Setup secrets require protected, destination-bound shared-store entries and
-Crabbox 0.76.0 or newer on an owned coordinator Linux lease. An old CLI needs an
+Crabbox 0.77.0 or newer on an owned coordinator Linux lease. An old CLI needs an
 update; a missing runtime helper needs reinstalling the matching complete Crabbox
 release. A coordinator-login error needs `crabbox login --url <broker-url>` on the
 Gateway host. A proxy-unavailable error needs checking the Gateway's secret proxy
