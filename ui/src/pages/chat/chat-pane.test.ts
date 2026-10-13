@@ -991,6 +991,7 @@ describe("chat pane history pagination intent", () => {
     state.handleChatScroll = vi.fn();
     pane.historyAutoLoadBlocked = true;
     pane.transcriptScrollTop = 100;
+    vi.spyOn(pane.transcript, "isPositionSettled", "get").mockReturnValue(true);
     pane.syncHistoryObserver = vi.fn();
     const event = new Event("scroll");
     const thread = document.createElement("div");
@@ -1038,6 +1039,7 @@ describe("chat pane history pagination intent", () => {
   it("loads a blocked unscrollable transcript from renewed upward intent", async () => {
     const client = createGatewayBrowserClientFixture({ request: vi.fn() });
     const { pane } = createTestChatPane({ client, sessions: createSessionCapabilityFixture() });
+    vi.spyOn(pane.transcript, "isPositionSettled", "get").mockReturnValue(true);
     pane.historyAutoLoadBlocked = true;
     pane.hasOlderMessages = vi.fn(() => true);
     pane.loadOlderMessages = vi.fn(async () => undefined);
@@ -1058,6 +1060,7 @@ describe("chat pane history pagination intent", () => {
   it("loads a blocked unscrollable transcript from a downward touch pull", async () => {
     const client = createGatewayBrowserClientFixture({ request: vi.fn() });
     const { pane } = createTestChatPane({ client, sessions: createSessionCapabilityFixture() });
+    vi.spyOn(pane.transcript, "isPositionSettled", "get").mockReturnValue(true);
     pane.historyAutoLoadBlocked = true;
     pane.hasOlderMessages = vi.fn(() => true);
     pane.loadOlderMessages = vi.fn(async () => undefined);

@@ -71,6 +71,7 @@ import type {
   ChatTaskSuggestionTrayProps,
   TaskSuggestionStartMode,
 } from "./components/chat-task-suggestions.ts";
+import type { ChatTranscriptController } from "./components/chat-transcript-controller.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
 import type { SessionSnapshotStore } from "./session-snapshot-store.ts";
 import type { SidebarLayout } from "./sidebar-layout.ts";
@@ -93,6 +94,7 @@ export function createPaneHeaderWorkspaceFixture(
 export interface TestChatPane extends HTMLElement, ReactiveControllerHost {
   readonly element: HTMLElement;
   render: ChatPaneRuntime["render"];
+  readonly transcript: ChatTranscriptController;
   catalogMessages: unknown[];
   active: boolean;
   presented: boolean;
