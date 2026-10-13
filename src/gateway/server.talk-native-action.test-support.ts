@@ -12,10 +12,10 @@ import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../talk/agent-consult-tool.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
-import { captureSessionMutationRouting } from "./session-sharing-routing.js";
 import { createTalkClientAgentConsultRunner } from "./talk/client-agent-consult.js";
 import { resolveTalkAgentConsultAuthority } from "./talk/client-gateway-control.js";
 import { retainTalkClientRunAuthority } from "./talk/client-run-authority.js";
+import { prepareTalkSessionTarget } from "./talk/session-target.js";
 import { prepareGatewayReplyRuntimeForTest } from "./test-helpers.js";
 
 /** Uses the history suite's existing Gateway, transcript state, and model seam. */
@@ -160,15 +160,7 @@ export async function runTalkNativeActionParity({
     const runner = createTalkClientAgentConsultRunner({
       config: getRuntimeConfig(),
       context,
-      sessionTarget: {
-        agentId,
-        sessionKey,
-        canonicalKey,
-        storePath,
-        assertCurrent: captureSessionMutationRouting(getRuntimeConfig(), undefined, [
-          { agentId, sessionKey },
-        ]),
-      },
+      sessionTarget: await prepareTalkSessionTarget(getRuntimeConfig(), sessionKey),
       ownerConnId: connectionId,
       runAuthority: retained,
       authority: resolveTalkAgentConsultAuthority(client.connect.scopes, client),

@@ -57,7 +57,6 @@ import {
   getSessionRowProjection,
 } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
-import { captureSessionMutationRouting } from "./session-sharing-routing.js";
 import { createTalkClientAgentConsultRunner } from "./talk/client-agent-consult.js";
 import {
   createGatewaySuiteHarness,
@@ -711,15 +710,7 @@ describe("Direct Talk consult history after call closure", () => {
       const runner = createTalkClientAgentConsultRunner({
         config: getRuntimeConfig(),
         context,
-        sessionTarget: {
-          agentId,
-          sessionKey,
-          canonicalKey,
-          storePath,
-          assertCurrent: captureSessionMutationRouting(getRuntimeConfig(), undefined, [
-            { agentId, sessionKey },
-          ]),
-        },
+        sessionTarget: await prepareTalkSessionTarget(getRuntimeConfig(), sessionKey),
         ownerConnId: connectionId,
         getVoiceSessionId: () => callId,
         initialItems: [],
