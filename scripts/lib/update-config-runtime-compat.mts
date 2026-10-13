@@ -57,8 +57,9 @@ export function isUpdateConfigRuntimeAlias(
   if (!contents.includes(target) || !contents.endsWith(bindings)) {
     return false;
   }
-  // 2026.9.5 through 2026.10.5-beta.2 shipped the older reader templates. Retain only
-  // those exact bodies for that upgrade window; the target and generated bindings vary.
+  // 2026.9.5 through 2026.10.3 and 2026.10.5-beta.3 shipped the older reader templates.
+  // Retain only those exact bodies for that upgrade window; the target and generated
+  // bindings vary.
   const body = contents
     .slice(0, -bindings.length)
     .replace(target, 'const target = new URL("./", import.meta.url).href;');
@@ -159,7 +160,7 @@ function finish(exit, output, logger) {
   if (exit.status === 0 && !exit.error && !exit.tooLarge && result?.ok === true) return result.value;
   const characters = Array.from(failureReason(result, exit).replace(/[\\s\\u0000-\\u001f\\u007f]+/g, " ").trim());
   const reason = characters.length > 500 ? characters.slice(0, 499).join("") + "…" : characters.join("");
-  const error = new Error("Candidate config read failed: " + reason + ". The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force to refresh it.");
+  const error = new Error("Candidate config read failed: " + reason + ". The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force with the same --profile or --dev option as this update to refresh it.");
   error.code = "candidate-config-read-failed";
   console.warn("[update:warning:" + error.code + "] " + error.message);
   throw error;

@@ -1353,7 +1353,6 @@ describe("previous release update compatibility", () => {
       [
         ["2026.9.8", "io.runtime-BNEtkwm5.mjs"],
         ["2026.10.5-beta.1", "io.runtime-t3hrjkTX.mjs"],
-        ["2026.10.5-beta.2", "io.runtime-BNfeDpmK.mjs"],
       ] as const
     ).flatMap(([release, target]) =>
       ["exact", "changed delegation", "changed binding", "changed target"].map(

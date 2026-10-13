@@ -160,7 +160,7 @@ console.log(JSON.stringify(warnings));
     Array.from(
       { length: 2 },
       () =>
-        "[update:warning:candidate-config-read-failed] Candidate config read failed: reader process exited with code 7 without a result. The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force to refresh it.",
+        "[update:warning:candidate-config-read-failed] Candidate config read failed: reader process exited with code 7 without a result. The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force with the same --profile or --dev option as this update to refresh it.",
     ),
   );
 });
@@ -278,7 +278,7 @@ console.log(JSON.stringify(diagnostics));
   expect(result.stderr).toBe("");
   expect(JSON.parse(result.stdout)).toEqual({
     warnings: [
-      `[update:warning:candidate-config-read-failed] Candidate config read failed: Error [ERR_MODULE_NOT_FOUND]: Cannot find module '${dependencyFile}' imported from ${path.join(dist, "io.runtime-Candidate.mjs")}. The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force to refresh it.`,
+      `[update:warning:candidate-config-read-failed] Candidate config read failed: Error [ERR_MODULE_NOT_FOUND]: Cannot find module '${dependencyFile}' imported from ${path.join(dist, "io.runtime-Candidate.mjs")}. The existing service definition was left unchanged. After the update finishes, run openclaw gateway install --force with the same --profile or --dev option as this update to refresh it.`,
     ],
     errors: [],
   });
