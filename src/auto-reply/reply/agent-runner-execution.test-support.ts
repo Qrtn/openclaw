@@ -249,6 +249,7 @@ vi.mock("../../infra/message-tool-run-outcome-store.js", () => ({
 vi.mock("../../runtime.js", () => ({
   defaultRuntime: {
     error: vi.fn(),
+    log: vi.fn(),
   },
 }));
 
