@@ -15,7 +15,7 @@ const suite = createControlUiE2eSuite({
   name: "Control UI chat composer redesign",
 });
 const pickerPopup = (kind: "model" | "effort") =>
-  `.chat-controls__${kind}-picker > wa-popup[data-anchored-overlay] > [part="popup"]`;
+  `.chat-controls__${kind}-picker > [data-anchored-overlay]`;
 
 // Browser contexts preserve test isolation; keep one process warm for this file.
 suite.define(() => {
@@ -858,7 +858,7 @@ suite.define(() => {
         .toBe(true);
       await captureMobileState(
         "mobile-composer-permissions-open.png",
-        composer.locator('.chat-controls__permission-picker [part="menu"]'),
+        composer.locator(".chat-controls__permission-menu"),
         [composer.locator(".chat-controls__permission-option").first()],
       );
       await page.keyboard.press("Escape");

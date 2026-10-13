@@ -1,4 +1,4 @@
-import type { JSX } from "@solidjs/web";
+import { Dynamic, type JSX } from "@solidjs/web";
 import { For, Show, createEffect, createSignal, onCleanup, onSettled, untrack } from "solid-js";
 import { acquireNativeOverlaySurface } from "../../lib/native-overlay-occlusion.ts";
 import { createOverlayAnchor, type OverlayPlacement } from "../overlay-anchor.ts";
@@ -12,6 +12,9 @@ export type MenuItem = {
   kind?: "item";
   id: string;
   label: string;
+  href?: string;
+  target?: JSX.AnchorHTMLAttributes<HTMLAnchorElement>["target"];
+  rel?: string;
   attributes?: JSX.HTMLAttributes<HTMLButtonElement> & {
     [name: `data-${string}`]: string | number | boolean | undefined;
   };
@@ -50,6 +53,7 @@ export type MenuProps = {
   open?: boolean;
   disabled?: boolean;
   onSelect?: (item: MenuItem, event: CustomEvent<MenuItem>) => void;
+  pointerFocus?: "menu" | "trigger";
   onOpenChange?(open: boolean): void;
   onBeforeShow?(event: Event): void;
   onBeforeHide?(event: Event): void;
@@ -135,7 +139,13 @@ export function Menu(props: BranchProps): JSX.Element {
     }
   };
   onSettled(() => overlay.bindSurface(surface));
-  const binding = useMenuMachine(overlay, direction, activate, identity.binding?.service);
+  const binding = useMenuMachine(
+    overlay,
+    direction,
+    activate,
+    identity.binding?.service,
+    () => props.pointerFocus ?? "menu",
+  );
   const [opened, setOpened] = createSignal(false);
   let openPublication = 0;
   const syncOpen = (open: boolean) => {
@@ -292,7 +302,8 @@ export function Menu(props: BranchProps): JSX.Element {
                   <Show
                     when={item().children}
                     fallback={
-                      <button
+                      <Dynamic
+                        component={item().href ? "a" : "button"}
                         {...item().attributes}
                         {...binding.item(
                           item().id,
@@ -301,7 +312,10 @@ export function Menu(props: BranchProps): JSX.Element {
                           item().checked,
                           item().label,
                         )}
-                        type="button"
+                        type={item().href ? undefined : "button"}
+                        href={item().disabled ? undefined : item().href}
+                        target={item().target}
+                        rel={item().rel}
                         class={["oc-menu-item", item().class]}
                         data-value={item().id}
                         data-variant={item().variant}
@@ -309,7 +323,7 @@ export function Menu(props: BranchProps): JSX.Element {
                         aria-label={item().label}
                         aria-checked={item().type ? (item().checked ? "true" : "false") : undefined}
                         aria-disabled={item().disabled ? "true" : undefined}
-                        disabled={item().disabled}
+                        disabled={item().href ? undefined : item().disabled}
                       >
                         <Show when={item().type}>
                           <span class="oc-menu-item__check" aria-hidden="true">
@@ -323,7 +337,7 @@ export function Menu(props: BranchProps): JSX.Element {
                         <Show when={item().details}>
                           <span class="oc-menu-item__details">{item().details}</span>
                         </Show>
-                      </button>
+                      </Dynamic>
                     }
                   >
                     {(children) => (

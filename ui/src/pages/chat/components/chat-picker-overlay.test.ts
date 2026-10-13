@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { settleTooltip, tooltipSurface } from "../../../components/tooltip.test-support.ts";
 import {
+  bindChatPickerOverlay,
   installChatComposerPickerDismissal,
   handleChatComposerDetailsToggle,
   handleChatComposerDropdownShow,
@@ -79,6 +80,34 @@ describe("chat picker overlay", () => {
       expect(dismissInvocations).toHaveBeenCalledOnce();
       expect(document.activeElement).toBe(trigger);
     }
+  });
+
+  it("lets the native owner clear search before closing and returning focus", () => {
+    const composer = document.createElement("div");
+    composer.className = "agent-chat__input";
+    const picker = document.createElement("details");
+    picker.innerHTML =
+      '<summary>Model</summary><div data-anchored-overlay popover="manual"><input data-chat-model-search></div>';
+    composer.append(picker);
+    document.body.append(composer);
+    onTestFinished(installChatComposerPickerDismissal(document));
+    onTestFinished(bindChatPickerOverlay(picker));
+    picker.open = true;
+    picker.dispatchEvent(new Event("toggle"));
+    const search = picker.querySelector("input")!;
+    search.value = "beta";
+    search.focus();
+    const escape = () =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    escape();
+    expect(search.value).toBe("");
+    expect(picker.open).toBe(true);
+    expect(document.activeElement).toBe(search);
+    escape();
+    expect(picker.open).toBe(false);
+    expect(document.activeElement).toBe(picker.querySelector("summary"));
   });
 
   it("shares dismissal until the final owner releases it and can reconnect", () => {

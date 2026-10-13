@@ -1,4 +1,3 @@
-import type WaPopup from "@awesome.me/webawesome/dist/components/popup/popup.js";
 import { createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -67,14 +66,13 @@ function mountPicker() {
   const trigger = picker.querySelector("summary")!;
   const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
   const composer = container.querySelector("textarea")!;
-  const popup = picker.querySelector<WaPopup>("wa-popup")!;
   const toggle = async (activate: () => Promise<void>) => {
     const toggled = new Promise<void>((resolve) => {
       picker.addEventListener("toggle", () => resolve(), { once: true });
     });
     await activate();
     await toggled;
-    await popup.updateComplete;
+    flush();
     await new Promise(requestAnimationFrame);
   };
   return { params, update, picker, trigger, search, composer, toggle };

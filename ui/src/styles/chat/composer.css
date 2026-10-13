@@ -2,7 +2,7 @@
 .chat-controls__inline-select-menu,
 .agent-chat__attach-menu::part(menu),
 .agent-chat__capability-menu::part(menu),
-.chat-controls__permission-picker::part(menu),
+.chat-controls__permission-menu,
 .chat-talk-input-picker::part(menu) {
   border: 1px solid var(--chat-composer-popover-border, var(--overlay-border));
   border-radius: var(--chat-composer-popover-radius, var(--radius-lg));
@@ -11,16 +11,26 @@
   corner-shape: superellipse(1.5);
 }
 
-.chat-controls__inline-select[open] > wa-popup::part(popup) {
+.chat-controls__inline-select[open] > wa-popup::part(popup),
+.chat-controls__inline-select[open] > .chat-picker-overlay {
   animation: chat-composer-picker-in var(--control-ui-transition-fast) ease;
 }
 
-.chat-controls__inline-select[open] > wa-popup[data-current-placement^="top"]::part(popup) {
+.chat-controls__inline-select[open] > wa-popup[data-current-placement^="top"]::part(popup),
+.chat-controls__inline-select[open] > .chat-picker-overlay[data-placement^="top"] {
   transform-origin: bottom;
 }
 
-.chat-controls__inline-select[open] > wa-popup[data-current-placement^="bottom"]::part(popup) {
+.chat-controls__inline-select[open] > wa-popup[data-current-placement^="bottom"]::part(popup),
+.chat-controls__inline-select[open] > .chat-picker-overlay[data-placement^="bottom"] {
   transform-origin: top;
+}
+
+.chat-picker-overlay {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
 }
 
 @keyframes chat-composer-picker-in {
@@ -2044,7 +2054,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
   max-height: min(280px, var(--auto-size-available-height, calc(100vh - 120px)));
 }
 
-.chat-controls__permission-picker::part(menu) {
+.chat-controls__permission-menu {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 16px;
@@ -2075,6 +2085,14 @@ html[dir="rtl"] .chat-attachment-loading > span {
 
 .chat-controls__permission-option {
   grid-column: 1 / -1;
+}
+
+.chat-controls__permission-option > .oc-menu-item__check {
+  display: none;
+}
+
+.chat-controls__permission-option > :is(.oc-menu-item__icon, .oc-menu-item__details) {
+  margin-inline: 0;
 }
 
 .chat-controls__permission-icon,
@@ -2130,7 +2148,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
   color: var(--muted);
 }
 
-.chat-controls__permission-option:state(disabled) .chat-controls__permission-option-icon,
+.chat-controls__permission-option:disabled .chat-controls__permission-option-icon,
 .chat-controls__permission-option[data-chat-permission-option="full"]
   .chat-controls__permission-option-icon {
   color: var(--accent);

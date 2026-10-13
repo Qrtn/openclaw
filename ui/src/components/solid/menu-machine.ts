@@ -60,6 +60,7 @@ export function useMenuMachine(
   direction: () => "ltr" | "rtl",
   onSelect: (value: string) => void,
   parent?: MenuService,
+  pointerFocus: () => "menu" | "trigger" = () => "menu",
 ): MenuBinding {
   let lastPointerX: number | undefined;
   let focusFromKeyboard = false;
@@ -247,7 +248,7 @@ export function useMenuMachine(
           if (disabled) {
             return;
           }
-          focusFromKeyboard = true;
+          focusFromKeyboard = event.detail === 0 || pointerFocus() === "menu";
           result.onClick?.(event);
         },
         onKeyDown: (e: KeyboardEvent) => {

@@ -78,11 +78,10 @@ async function fixture(
       details.addEventListener("toggle", () => resolve(), { once: true });
     });
     details.open = true;
-    // The toggle handler activates the popup; hidden descendants have stale
-    // computed styles in WebKit even after their Lit update completes.
+    // The details toggle commits its native top-layer surface.
     await opened;
   }
-  await host.querySelector("wa-popup")!.updateComplete;
+  expect(host.querySelector("[data-anchored-overlay]")!.matches(":popover-open")).toBe(true);
   expect(host.querySelector<HTMLInputElement>("input[type=range]")!.checkVisibility()).toBe(true);
   return {
     input: host.querySelector<HTMLInputElement>("input[type=range]")!,

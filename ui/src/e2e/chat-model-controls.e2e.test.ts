@@ -88,8 +88,7 @@ suite.define(() => {
       await refreshDetails.waitFor({ state: "visible" });
       // The popup's opening scale animation can move this small target away
       // from a stationary pointer before the tooltip's hover delay completes.
-      await picker.locator("wa-popup[data-anchored-overlay]").evaluate(async (popup) => {
-        const surface = popup.shadowRoot!.querySelector<HTMLElement>('[part="popup"]')!;
+      await picker.locator("[data-anchored-overlay]").evaluate(async (surface) => {
         await Promise.all(surface.getAnimations().map((animation) => animation.finished));
       });
       await refreshDetails.hover();
