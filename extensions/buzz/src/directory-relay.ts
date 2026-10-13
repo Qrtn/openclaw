@@ -19,7 +19,6 @@ type BuzzSubscription = ReturnType<Relay["prepareSubscription"]>;
 type ProfileSubscriptionGeneration = {
   subscriptions: BuzzSubscription[];
   pendingReady: number;
-  opening: boolean;
   readyTimeout?: ReturnType<typeof setTimeout>;
 };
 
@@ -157,7 +156,6 @@ export function startBuzzDirectoryRelay(params: {
       closed ||
       params.signal?.aborted ||
       queuedProfilePublicKeys === undefined ||
-      profileGeneration?.opening ||
       (profileGeneration?.pendingReady ?? 0) > 0
     ) {
       return;
@@ -172,7 +170,6 @@ export function startBuzzDirectoryRelay(params: {
     const generation: ProfileSubscriptionGeneration = {
       subscriptions: [],
       pendingReady: authorChunks.length,
-      opening: true,
     };
     generation.readyTimeout = setTimeout(() => {
       if (profileGeneration !== generation || generation.pendingReady === 0) {
@@ -183,18 +180,16 @@ export function startBuzzDirectoryRelay(params: {
     profileGeneration = generation;
     try {
       for (const authors of authorChunks) {
-        let ready = false;
         const markReady = () => {
-          if (ready || profileGeneration !== generation) {
+          if (profileGeneration !== generation) {
             return;
           }
-          ready = true;
           generation.pendingReady -= 1;
           if (generation.pendingReady === 0 && generation.readyTimeout) {
             clearTimeout(generation.readyTimeout);
             generation.readyTimeout = undefined;
           }
-          if (!generation.opening && generation.pendingReady === 0) {
+          if (generation.pendingReady === 0) {
             applyQueuedProfilePublicKeys();
           }
         };
@@ -242,11 +237,6 @@ export function startBuzzDirectoryRelay(params: {
         closeProfileGeneration(PROFILE_SUBSCRIPTION_REPLACED_REASON);
       }
       reportError(error);
-      return;
-    }
-    generation.opening = false;
-    if (generation.pendingReady === 0) {
-      applyQueuedProfilePublicKeys();
     }
   };
 
