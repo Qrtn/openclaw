@@ -23,7 +23,7 @@ import { applyChatPendingInputs, getChatPendingInputs } from "./chat-pending-inp
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { createTestTranscript } from "./chat-view.test-helpers.ts";
 import { releaseChatMediaResourceSubscriber } from "./components/chat-message-media.ts";
-import { renderChatThread } from "./components/chat-thread.ts";
+import { renderChatThread } from "./components/chat-thread.test-support.ts";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,

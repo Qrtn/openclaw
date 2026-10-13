@@ -13,7 +13,7 @@ import { LitContent, type SolidBridgeElement } from "../lit/solid-bridge.ts";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { flush } from "../test-helpers/solid-settle.ts";
 import { ExecApprovalCard } from "./exec-approval-card-solid.tsx";
-import { renderSidebarApprovalRow } from "./exec-approval-card.ts";
+import { renderSidebarApprovalRow } from "./exec-approval-card.test-support.ts";
 
 let container: HTMLDivElement;
 

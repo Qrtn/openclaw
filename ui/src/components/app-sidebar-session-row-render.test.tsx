@@ -117,8 +117,7 @@ it("paints the restored roster and workspace in the first sidebar update", async
   expect(host.querySelector('[data-avatar="⚓"]')).not.toBeNull();
 });
 
-it("keeps cached session rows until the child publishes the settled live roster", async () => {
-  const { host } = createHost();
+it("keeps cached session rows while the live roster settles", async () => {
   const key = "agent:main:dashboard:cedar";
   const list = createDeferred<SessionsListResult>();
   const requested = createDeferred();
@@ -148,14 +147,10 @@ it("keeps cached session rows until the child publishes the settled live roster"
     agents: [{ id: "main", name: "Harbor", identity: { emoji: "⚓" } }],
   });
   const store = rosterActivityStore(context);
-  // A parent invalidation can arrive before the child consumes the same roster publication.
-  const stop = store.subscribe(() => host.requestUpdate());
-  onTestFinished(stop);
+  const { sidebar: host } = await mountSidebarContext(context);
+  host.sidebarAgentsMode = "roster";
   host.connected = true;
   host.sidebarLiveActivity = false;
-  const provider = createApplicationContextProvider(context);
-  provider.append(host);
-  document.body.append(provider);
   await requested.promise;
   await host.updateComplete;
   const saved = snapshotSessions([projectSidebarSession({ key, label: "Cedar" })]);
@@ -178,17 +173,15 @@ it("keeps cached session rows until the child publishes the settled live roster"
   });
   host.requestUpdate();
   await host.updateComplete;
-  const roster = host.querySelector<ReactiveElement>("openclaw-sidebar-agent-roster")!;
-  await roster.updateComplete;
   const rowIds = () =>
     [...host.querySelectorAll(".sidebar-session-content [data-session-key]")].map((row) =>
       row.getAttribute("data-session-key"),
     );
-  expect(rowIds()).toEqual([key]);
+  await waitForSolid(() => expect(rowIds()).toEqual([key]));
   const samples: Array<Array<string | null>> = [];
   const sample = () => samples.push(rowIds());
   const observer = new MutationObserver(sample);
-  observer.observe(host, { childList: true, subtree: true });
+  observer.observe(host.hostElement, { childList: true, subtree: true });
   onTestFinished(() => observer.disconnect());
   sample();
   list.resolve({
@@ -199,9 +192,9 @@ it("keeps cached session rows until the child publishes the settled live roster"
     sessions: [{ key, kind: "direct", label: "Cedar", updatedAt: 1 }],
   });
   await store.refresh();
-  await host.updateComplete;
-  await roster.updateComplete;
-  await host.updateComplete;
+  await waitForSolid(() =>
+    expect(host.querySelector('aside[data-snapshot-state="live"]')).not.toBeNull(),
+  );
   observer.disconnect();
   sample();
   expect(host.querySelector('aside[data-snapshot-state="live"]')).not.toBeNull();

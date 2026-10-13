@@ -4,7 +4,7 @@ import "../../../styles.css";
 import "../../../styles/chat.ts";
 import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { solidContent } from "../../../lit/solid-content.tsx";
-import { renderActivityGroup, renderMessageGroup } from "./chat-message-group.ts";
+import { renderActivityGroup, renderMessageGroup } from "./chat-message-group.test-support.ts";
 import { renderWorkGroupSummary } from "./chat-message-stream.ts";
 import { renderToolCard } from "./chat-tool-cards.ts";
 import { ChatToolRawOutput } from "./chat-tool-content.solid.tsx";
