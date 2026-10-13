@@ -104,8 +104,12 @@ it("coalesces usage, flushes exact reads, and recovers deferred appends after re
       });
       return {
         ...buildUsageOverview({
-          sessions,
-          summaries: cached.summaries,
+          rows: sessions.map((session, index) => ({
+            key: session.key,
+            agentId: session.agentId,
+            usage: cached.summaries[index] ?? null,
+            computing: cached.summaries[index] ? undefined : true,
+          })),
           options: {},
           dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
         }),
