@@ -240,8 +240,9 @@ nothing, nothing happens.
 
 Reviews judge waste against your request. User-requested repetition, waiting,
 polling, verification, ordering, and timing are not waste. A correction must offer
-a cheaper next step that still satisfies the whole request; when uncertain, the
-advisor leaves the agent's approach unchanged.
+a cheaper next step that still satisfies the whole request, fixing the cause and
+resuming work when possible rather than reporting a recoverable blocker. When
+uncertain, the advisor leaves the agent's approach unchanged.
 
 Turn it on in **Settings → Agents & Tools → Labs → Advisor**. Its **Configure**
 button opens the plugin's settings page (**Settings → Plugins → Advisor**), where

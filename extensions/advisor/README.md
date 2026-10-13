@@ -4,9 +4,10 @@ Experimental and off by default. During user-directed work, Advisor reviews a
 fork of the conversation on the session's own model. When it finds avoidable
 work, such as drifting beyond the request or redundant tool calls, it steers the
 active run with one short correction. Reviews preserve user-requested repetition,
-waiting, ordering, and timing; uncertain cases receive no correction. If the run
-cannot accept steering, the correction becomes hidden context on the next turn
-and expires after 24 hours.
+waiting, ordering, and timing; uncertain cases receive no correction. Corrections
+aim to fix the cause and resume useful work, not just stop at a recoverable
+blocker. If the run cannot accept steering, the correction becomes hidden context
+on the next turn and expires after 24 hours.
 
 Enable it in **Settings → Agents & Tools → Labs → Advisor**. Its **Configure**
 button opens the plugin's settings page. Or use config:

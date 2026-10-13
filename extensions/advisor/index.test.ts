@@ -51,8 +51,7 @@ function setup(pluginConfig: Record<string, unknown>) {
   const lifecycles: Parameters<OpenClawPluginApi["registerRuntimeLifecycle"]>[0][] = [];
   const runContexts = new Map<string, PluginJsonValue>();
   const eventContext = (runId: string): Parameters<AgentEventSubscription["handle"]>[1] => ({
-    getRunContext: <T extends PluginJsonValue>(namespace: string) =>
-      runContexts.get(`${runId}:${namespace}`) as T | undefined,
+    getRunContext: (namespace) => api.runContext.getRunContext({ runId, namespace }),
     setRunContext: (namespace, value) => {
       runContexts.set(`${runId}:${namespace}`, value);
     },
