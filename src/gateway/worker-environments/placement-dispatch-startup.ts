@@ -348,6 +348,8 @@ export function createWorkerPlacementDispatchStartup(options: {
         requireAttachedEnvironment();
       };
       const preparation = readWorkerProjectPreparation(params.environment.profileSnapshot.project);
+      let lifecycleHomeDir: string | undefined;
+      let assertPreparedBindingCurrent: (() => void) | undefined;
       let preparedRepository: Parameters<
         typeof syncSessionRepositoryWorkspace
       >[0]["preparedRepository"];
@@ -363,6 +365,8 @@ export function createWorkerPlacementDispatchStartup(options: {
           assertCurrent: assertSyncOwner,
         });
         assertSyncOwner();
+        lifecycleHomeDir = prepared.homeDir;
+        assertPreparedBindingCurrent = prepared.assertCurrent;
         if (project && "source" in project) {
           if (
             params.workspace.kind !== "repository" ||
@@ -406,14 +410,24 @@ export function createWorkerPlacementDispatchStartup(options: {
               authorize: assertSyncOwner,
             });
       assertSyncOwner();
+      const runProjectLifecycleCommand = environments.runProjectLifecycleCommand;
       if (preparation?.recipe && preparation.runSetupScript !== false) {
         await runWorkerProjectLifecycle({
           recipe: preparation.recipe,
           tunnel,
+          workspaceDir: synced.remoteWorkspaceDir,
+          homeDir: lifecycleHomeDir,
+          runSetupCommand: runProjectLifecycleCommand
+            ? (command) =>
+                runProjectLifecycleCommand(provisioned.environmentId, ownerEpoch, command)
+            : undefined,
           // A completed activation is the existing durable witness. An interrupted
           // first binding retries declared setup; commands should be idempotent.
           postCreate: params.environment.lastActivatedAtMs === null,
-          assertCurrent: assertSyncOwner,
+          assertCurrent: () => {
+            assertSyncOwner();
+            assertPreparedBindingCurrent?.();
+          },
           signal: params.signal,
         });
       }

@@ -10,6 +10,7 @@ import { resolveGitRepositoryPaths } from "../../agents/worktrees/git.js";
 import { normalizeCapabilityProviderId } from "../../plugins/provider-registry-shared.js";
 import type { WorkerExecutionMode, WorkerProfile, WorkerProvider } from "../../plugins/types.js";
 import { workerEnvironmentServiceError as serviceError } from "./environment-errors.js";
+import { assertEnvironmentRecipeSecretsMapped } from "./environment-recipe.js";
 import {
   createWorkerProjectPreparationIdentity,
   readWorkerProjectPreparation,
@@ -185,9 +186,14 @@ export function createWorkerProviderIntent(options: WorkerProviderIntentOptions)
         "Worker preparation must have exactly one project source",
       );
     }
+    const supportsProjectPreparation = provider.supportsProjectPreparation?.(
+      profile,
+      machineClass,
+      os,
+    );
     if (
       (projectPath || createOptions.repository || createOptions.projectRepository) &&
-      provider.supportsProjectPreparation?.(profile, machineClass, os)
+      (supportsProjectPreparation || provider.runSetupCommand)
     ) {
       if (!options.projectNamespace) {
         throw serviceError("invalid_state", "Worker project preparation namespace is unavailable");
@@ -246,11 +252,11 @@ export function createWorkerProviderIntent(options: WorkerProviderIntentOptions)
       signal?.throwIfAborted();
       if (project) {
         const target = provider.resolvePreparationTarget?.(profile, machineClass, os);
-        const recipe = target
-          ? "source" in project
+        const recipe =
+          "source" in project
             ? repositoryAdmission?.recipe
-            : await readWorkerProjectEnvironmentRecipe(project, signal)
-          : undefined;
+            : await readWorkerProjectEnvironmentRecipe(project, signal);
+        assertEnvironmentRecipeSecretsMapped(recipe, profile.setupSecrets);
         const setupRecipe = recipe?.identity;
         signal?.throwIfAborted();
         // An executable recipe does not authorize itself. Non-admin callers retain
@@ -278,7 +284,7 @@ export function createWorkerProviderIntent(options: WorkerProviderIntentOptions)
             runSetupScript: createOptions.runSetupScript,
           });
           profileSnapshot = { ...profileSnapshot, project: { ...project, preparation } };
-        } else {
+        } else if (supportsProjectPreparation) {
           profileSnapshot = { ...profileSnapshot, project };
         }
       }
