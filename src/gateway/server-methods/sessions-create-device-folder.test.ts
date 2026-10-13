@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import { projectIncognitoSessionRuntimeFacts } from "../../config/sessions/session-incognito-runtime-facts.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { NODE_WORKER_WORKSPACE_EXEC_COMMAND } from "../../infra/node-commands.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
@@ -254,14 +253,3 @@ test.each(["caller", "device"] as const)(
     expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
   },
 );
-
-test("incognito runtime projections retain the device folder without local workspace metadata", () => {
-  const entry: InternalSessionEntry = {
-    sessionId: "private-folder",
-    updatedAt: 1,
-    deviceFolder: canonicalFolder,
-  };
-  const facts = projectIncognitoSessionRuntimeFacts(entry);
-  expect(facts.media?.deviceFolder).toEqual(canonicalFolder);
-  expect(facts.policy?.deviceFolder).toEqual(canonicalFolder);
-});

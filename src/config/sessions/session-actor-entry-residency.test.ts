@@ -1,8 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { prepareSessionCostUsageRefreshLock } from "../../infra/session-cost-usage-cache.sqlite.js";
 import { runSqliteImmediateTransactionSync } from "../../infra/sqlite-transaction.js";
-import { loadUsageCacheOperations } from "../../state/openclaw-agent-execution-operations.js";
-import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import {
   participantRecordsBySessionKey,
@@ -126,16 +125,9 @@ it("discards rolled-back participant facts and retains the next committed contri
 });
 
 it("retains resident session facts across usage cache writes and reloads actual session changes", async () => {
-  const usage = await loadUsageCacheOperations();
-  await withActor((f) => {
+  await withActor(async (f) => {
     const initial = f.read();
-    const context: AgentWorkerOperationContext = {
-      open: () => f.database,
-      options: { agentId: f.database.agentId, path: f.database.path },
-      admit() {},
-      writeTransaction: (_label, _owner, write) =>
-        runSqliteImmediateTransactionSync(f.database.db, () => write(f.database)),
-    };
+    const usage = prepareSessionCostUsageRefreshLock(f.database.agentId, f.database.path);
     const reads = trackSqliteStatementExecutions(f.database.db, ["hydration"], (sql) =>
       sql.includes('as "actor_participants"') ? "hydration" : null,
     );
@@ -144,31 +136,20 @@ it("retains resident session facts across usage cache writes and reloads actual 
       expect(reads.counts.hydration).toBe(0);
     };
     try {
-      expect(
-        usage["usageCache.acquireLock"](
-          { previousRaw: null, previousOwnerIsRunning: false, lockJson: "lock", startedAt: 1 },
-          context,
-        ),
-      ).toBe(true);
+      expect(await usage.acquire()).toBe(true);
       unchanged();
       expect(
-        usage["usageCache.writeRollup"](
-          {
-            rollupId: "synthetic-rollup",
-            valueJson: new TextEncoder().encode("{}"),
-            blob: null,
-            updatedAt: 2,
-          },
-          context,
-        ),
+        await usage.writeRollup({
+          rollupId: "synthetic-rollup",
+          valueJson: new TextEncoder().encode("{}"),
+          blob: null,
+          updatedAt: 2,
+        }),
       ).toBe(true);
       unchanged();
-      usage["usageCache.prune"](
-        [{ key: "synthetic-rollup", valueJson: "{}", updatedAt: 2 }],
-        context,
-      );
+      await usage.pruneRows([{ key: "synthetic-rollup", valueJson: "{}", updatedAt: 2 }]);
       unchanged();
-      usage["usageCache.releaseLock"]("lock", context);
+      await usage.release();
       unchanged();
 
       runSqliteImmediateTransactionSync(f.database.db, () =>
@@ -181,12 +162,18 @@ it("retains resident session facts across usage cache writes and reloads actual 
       expect(reads.counts.hydration).toBe(1);
     } finally {
       reads.restore();
+      await usage.release();
     }
   });
 });
 
 it("keeps transcript residency across entry patches without losing either owner's writes", async () => {
   await withActor(async (f) => {
+    f.database.db
+      .prepare(
+        "INSERT INTO board_tabs (session_key, tab_id, title, position, created_by, revision) VALUES (?, 'main', 'Synthetic board', 0, 'user', 0)",
+      )
+      .run(f.target.sessionKey);
     runSqliteImmediateTransactionSync(f.database.db, () =>
       appendTranscriptEventsInTransaction(f.database, f.scope, [
         {
@@ -213,7 +200,7 @@ it("keeps transcript residency across entry patches without losing either owner'
       leafEntryId: "before-patch",
     };
     const entryPatch = (
-      fields: { label?: string; lifecycleRevision?: string },
+      fields: { label?: string; lifecycleRevision?: string; model?: string },
       shouldCommitIf = predicate,
     ) =>
       f.patchEntry({
@@ -235,13 +222,24 @@ it("keeps transcript residency across entry patches without losing either owner'
           : null,
     );
     try {
-      entryPatch({ label: "entry owner committed" });
+      entryPatch({ label: "entry owner committed", model: "updated-model" });
       expect(reads.counts.watermark).toBe(0);
+      runSqliteImmediateTransactionSync(f.database.db, () =>
+        recordSessionParticipantFromWorker(f.database, f.scope, {
+          identity: { type: "agent", id: "peer" },
+          promptedAt: 10,
+        }),
+      );
       reads.counts.select = 0;
       const after = f.read();
       expect(after.entry?.label).toBe("entry owner committed");
+      expect(after.entry?.model).toBe("updated-model");
+      expect(after.hasBoard).toBe(true);
+      expect(after.participants).toMatchObject([
+        { identity: { id: "peer" }, contributionCount: 1 },
+      ]);
       expect(after.transcript).toEqual(before.transcript);
-      expect(after.version).toEqual({ ...before.version, sequence: before.version.sequence + 1 });
+      expect(after.version).toEqual({ ...before.version, sequence: before.version.sequence + 2 });
       const accounting: Mutation = {
         type: "session.actor.patch",
         input: {
@@ -310,5 +308,7 @@ it("keeps transcript residency across entry patches without losing either owner'
     const replaced = f.read();
     expect(replaced.version.epoch).not.toBe(rolledBack.version.epoch);
     expect(replaced.entry?.lifecycleRevision).toBe("new-lifecycle");
+    expect(replaced.entry?.model).toBe("updated-model");
+    expect(replaced.hasBoard).toBe(true);
   });
 });
