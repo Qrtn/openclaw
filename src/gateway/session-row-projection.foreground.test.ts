@@ -498,7 +498,9 @@ it("keeps pending Worker metadata, membership, and summary facts across optional
           }),
         }),
       ]);
-      expect(result.sessions[0]?.lastMessagePreview).toBeUndefined();
+      // The metadata reload also carries the completed durable backfill, even while
+      // its original optional publication is held.
+      expect(result.sessions[0]?.lastMessagePreview).toBe("Read-only preview");
       expect(projection.dirtyRowCount).toBe(0);
       await backfill.publishAvailable();
       expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({

@@ -23,7 +23,10 @@ import {
 } from "./server-methods/sessions-read-cache.test-support.js";
 import { createPreparedGatewayModelCatalog } from "./server-model-catalog-view.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
-import { observeSessionRowBackfill } from "./session-row-backfill.test-support.js";
+import {
+  clearStoredSessionRowTranscriptForTest,
+  observeSessionRowBackfill,
+} from "./session-row-backfill.test-support.js";
 import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjectionBackfill } from "./session-row-projection-backfill.js";
@@ -307,6 +310,7 @@ it("eventually fills legacy titles and previews without waiting during startup o
       ],
       touchSessionEntry: false,
     });
+    clearStoredSessionRowTranscriptForTest(target);
     const before = loadSessionEntry(target);
     const prepareBackfill = async () => {
       const release = retainSessionListForegroundWork();
@@ -365,14 +369,8 @@ it("eventually fills legacy titles and previews without waiting during startup o
       });
       expect(loadSessionEntry(target)).toEqual(expected);
     }
-    const {
-      projection: repairedProjection,
-      backfilled: repairedBackfilled,
-      release: releaseRepaired,
-    } = await prepareBackfill();
+    const repairedProjection = await createSessionRowProjection({ cfg });
     try {
-      releaseRepaired();
-      await repairedBackfilled;
       expect(
         repairedProjection.snapshot(
           { agentId: "main", key: target.sessionKey },
@@ -394,7 +392,6 @@ it("eventually fills legacy titles and previews without waiting during startup o
       });
       expect(replacement?.lastMessagePreview).toBeUndefined();
     } finally {
-      releaseRepaired();
       repairedProjection.dispose();
     }
   });
