@@ -11,7 +11,10 @@ import {
   updateRunReportInputFromResult,
 } from "../../infra/update-run-report.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
-import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
+import {
+  completePostCorePluginUpdate,
+  runUpdateFinalizationDoctorInFreshProcess,
+} from "./update-command-fresh-doctor.js";
 
 export function registerFreshDoctorDiagnosticTests({
   mocks,
@@ -26,6 +29,25 @@ export function registerFreshDoctorDiagnosticTests({
   tempDirs: ReturnType<typeof useAutoCleanupTempDirTracker>;
   updateOptions: Parameters<typeof completePostCorePluginUpdate>[0];
 }): void {
+  it("records an untraced Doctor once with explicitly unknown deferred selectors", async () => {
+    mocks.command.mockResolvedValueOnce({ stdout: "", stderr: "" });
+    const onDoctorStep = vi.fn();
+    await runUpdateFinalizationDoctorInFreshProcess({
+      ...updateOptions,
+      phase: "pre-plugin",
+      root: tempDirs.make("fresh-doctor-untraced-"),
+      onDoctorStep,
+    });
+    expect(onDoctorStep).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        name: "pre-plugin doctor",
+        exitCode: 0,
+        deferredInspectionCheckIds: null,
+      }),
+    );
+    expect(onDoctorStep.mock.calls[0]?.[0].diagnostics).toBeUndefined();
+  });
+
   it("captures an explicitly reported missing-module failure after long warnings for current and released readers", async () => {
     const root = tempDirs.make("post-plugin-validation-command-");
     const stateDir = path.join(root, "state");
@@ -57,7 +79,7 @@ export function registerFreshDoctorDiagnosticTests({
       ...updateOptions,
       root,
       nodeRunner: process.execPath,
-      freshDoctorRequired: false,
+      pluginUpdate: { ...updateOptions.pluginUpdate, changed: false },
     });
     expect(result.reason).toBe("post-plugin-config-validation-execution-failed");
     expect(result.failureFacts).toHaveLength(3);
@@ -142,7 +164,7 @@ export function registerFreshDoctorDiagnosticTests({
       );
       const { pluginUpdate: result } = await completePostCorePluginUpdate({
         ...updateOptions,
-        freshDoctorRequired: false,
+        pluginUpdate: { ...updateOptions.pluginUpdate, changed: false },
       });
       expect(result.failureFacts).toEqual([
         expect.objectContaining({ message: "Command exited with code 1" }),
@@ -177,7 +199,7 @@ export function registerFreshDoctorDiagnosticTests({
     );
     const { pluginUpdate: result } = await completePostCorePluginUpdate({
       ...updateOptions,
-      freshDoctorRequired: false,
+      pluginUpdate: { ...updateOptions.pluginUpdate, changed: false },
     });
     expect(result.failureFacts?.[1]?.message).toMatch(/^stderr: Validator could not settle/u);
     expect(result.failureFacts?.[1]?.message?.length).toBeLessThanOrEqual(200);

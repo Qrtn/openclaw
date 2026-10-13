@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { expectDefined } from "@openclaw/normalization-core";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { assertOperatorModelAllowed } from "../agents/admitted-run-context.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import type { ModelRef } from "../agents/model-ref-shared.js";
@@ -16,7 +18,9 @@ import {
 import { resolvePluginSubagentCompletionRequester } from "../plugins/runtime/subagent-requester-context.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { PluginOrigin } from "../plugins/types.js";
-import { createBackgroundWorkOwner } from "../process/background-work.js";
+import { enqueueCommandInLane } from "../process/command-queue.js";
+import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
+import { CommandLane } from "../process/lanes.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "./operator-scopes.js";
 import type { GatewayContextResolver, GatewayRequestOptions } from "./server-methods/types.js";
 import {
@@ -29,13 +33,10 @@ import { resolvePluginSubagentToolsAlsoAllow } from "./server-plugin-runtime-cli
 function normalizePluginSubagentRunRuntime(
   value: unknown,
 ): Awaited<ReturnType<PluginRuntime["subagent"]["run"]>>["runtime"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  const harness = typeof record.harness === "string" ? record.harness.trim() : "";
-  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
-  const model = typeof record.model === "string" ? record.model.trim() : "";
+  const record = asOptionalRecord(value);
+  const harness = normalizeOptionalString(record?.harness);
+  const provider = normalizeOptionalString(record?.provider);
+  const model = normalizeOptionalString(record?.model);
   return harness && provider && model ? { harness, provider, model } : undefined;
 }
 
@@ -104,7 +105,7 @@ function resolveFallbackModelOverridePolicy(params: {
   }
   if (!params.model?.trim() || (!params.provider && !params.model.includes("/"))) {
     throw new Error(
-      "fallback provider/model overrides that use an allowlist must resolve to a canonical provider/model target.",
+      "fallback provider/model overrides that use an allowlist must resolve to a full provider/model target.",
     );
   }
   return policy;
@@ -221,16 +222,15 @@ export function createGatewaySubagentRuntime(
         await execution.authorize();
         assertCurrent();
         authorizeModelOverride(params);
-        const signals = [params.signal, runtimeLifetime, execution.signal].filter(
-          (signal): signal is AbortSignal => signal !== undefined,
+        const signal = AbortSignal.any(
+          [getGatewayRestartDrainSignal(), params.signal, runtimeLifetime, execution.signal].filter(
+            (candidate): candidate is AbortSignal => candidate !== undefined,
+          ),
         );
-        // Preserve subagent authority while sharing the sessionless inference owner.
-        // Queueing must not outlive the Gateway instance that admitted the plugin.
-        return await createBackgroundWorkOwner({
-          owner: `plugin:${pluginId}`,
-          maxConcurrent: 3,
-        }).enqueue(
-          async (signal) => {
+        return await enqueueCommandInLane(
+          CommandLane.Subagent,
+          async () => {
+            signal.throwIfAborted();
             assertCurrent();
             const [
               { resolveConfiguredAgentId },
@@ -283,11 +283,11 @@ export function createGatewaySubagentRuntime(
                 ...(explicitOverride ? { fallbacksOverride: [] } : {}),
                 run: async (provider, model) => {
                   assertCurrent();
-                  signal.throwIfAborted();
                   runSignal.throwIfAborted();
                   const isSelectedPrimary =
                     provider === selection.provider && model === selection.modelId;
                   const result = await runIsolatedCompletion({
+                    purpose: "plugin-completion",
                     config: cfg,
                     agentId,
                     provider,
@@ -302,7 +302,6 @@ export function createGatewaySubagentRuntime(
                   });
                   runSignal.throwIfAborted();
                   assertCurrent();
-                  signal.throwIfAborted();
                   assertOperatorModelAllowed(execution.operatorAuthority, result);
                   return result;
                 },
@@ -310,7 +309,6 @@ export function createGatewaySubagentRuntime(
             );
             runSignal.throwIfAborted();
             assertCurrent();
-            signal.throwIfAborted();
             const result = fallbackResult.result;
             assertOperatorModelAllowed(execution.operatorAuthority, result);
             finalizePluginLlmCompletion({
@@ -328,7 +326,7 @@ export function createGatewaySubagentRuntime(
             });
             return { text: result.text };
           },
-          { abortSignal: signals.length ? AbortSignal.any(signals) : undefined },
+          { priority: "background", abortSignal: signal },
         );
       } finally {
         execution.release();
@@ -345,10 +343,7 @@ export function createGatewaySubagentRuntime(
         params.completionDelivery,
       );
       const scope = getPluginRuntimeGatewayRequestScope();
-      const pluginId =
-        typeof scope?.pluginId === "string" && scope.pluginId.trim()
-          ? scope.pluginId.trim()
-          : undefined;
+      const pluginId = normalizeOptionalString(scope?.pluginId);
       const runtimePluginToolGrant = resolvePluginSubagentToolsAlsoAllow({
         pluginId,
         toolsAlsoAllow: params.toolsAlsoAllow,
@@ -446,9 +441,7 @@ export function createGatewaySubagentRuntime(
       return { runId, sessionKey, ...(runtime ? { runtime } : {}) };
     },
     async waitForRun(params) {
-      const payload = await dispatchGatewayMethodInProcess<
-        Omit<AgentWaitResult, "status"> & { status?: string }
-      >(
+      const payload = await dispatchGatewayMethodInProcess<AgentWaitResult>(
         "agent.wait",
         {
           runId: params.runId,
@@ -456,16 +449,9 @@ export function createGatewaySubagentRuntime(
         },
         { resolveGatewayContext },
       );
-      const { status: rawStatus, error, ...metadata } = payload;
-      let status = rawStatus;
-      if (status === "completed" || status === "succeeded") {
-        status = "ok";
-      } else if (status === "error" && error?.trim().toLowerCase() === "completed") {
-        status = "ok";
-      }
-      if (status !== "ok" && status !== "error" && status !== "timeout" && status !== "pending") {
-        throw new Error(`Gateway agent.wait returned unexpected status: ${rawStatus}`);
-      }
+      const { status: waitStatus, error, ...metadata } = payload;
+      const status =
+        waitStatus === "error" && error?.trim().toLowerCase() === "completed" ? "ok" : waitStatus;
       return {
         ...metadata,
         status,
@@ -475,10 +461,7 @@ export function createGatewaySubagentRuntime(
     getSessionMessages,
     async deleteSession(params) {
       const scope = getPluginRuntimeGatewayRequestScope();
-      const pluginId =
-        typeof scope?.pluginId === "string" && scope.pluginId.trim()
-          ? scope.pluginId.trim()
-          : undefined;
+      const pluginId = normalizeOptionalString(scope?.pluginId);
       const pluginOwnedCleanupOptions = pluginId
         ? {
             pluginRuntimeOwnerId: pluginId,

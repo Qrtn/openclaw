@@ -19,7 +19,10 @@ import {
   readSessionTranscriptFailureRunId,
   readSessionTranscriptRunId,
 } from "../sessions/transcript-events.js";
-import { formatProviderRefusalText } from "../shared/assistant-error-format.js";
+import {
+  CONTEXT_OVERFLOW_ERROR_MESSAGE,
+  formatProviderRefusalText,
+} from "../shared/assistant-error-format.js";
 import {
   isOpenClawMessageToolMirrorAssistantMessage,
   isTranscriptOnlyOpenClawAssistantMessage,
@@ -39,8 +42,8 @@ import {
   mergeTtsSupplementMessages,
   projectForwardedMessages,
   toProjectedMessages,
-  type SubagentCoordinationDisplayResolver,
 } from "./chat-display-projection.history.js";
+import { mapChatDisplayMessages } from "./chat-display-projection.map.js";
 import {
   sanitizeChatHistoryContentBlock,
   sanitizeChatHistoryMessage,
@@ -53,12 +56,14 @@ import type {
   CurrentUserProfileDisplay,
   CurrentUserProfileDisplayResolver,
 } from "./current-user-profile-display.js";
+import type { SubagentCoordinationDisplayResolver } from "./session-transcript-read.types.js";
 import { projectTranscriptImageArtifacts } from "./transcript-image-artifacts.js";
 
 export type ChatDisplayProjectionOptions = {
   resolveCronJobName?: (jobId: string) => string | undefined;
   includeCommentaryFallbacks?: boolean;
   maxChars?: number;
+  toolResultMaxChars?: number;
   activity?: false;
   resolveCurrentUserProfileDisplay?: CurrentUserProfileDisplayResolver;
   stripEnvelope?: boolean;
@@ -117,14 +122,7 @@ function projectCurrentUserProfileAvatars(
   if (!resolveDisplay) {
     return messages;
   }
-  const project = createCurrentUserProfileMessageProjector(resolveDisplay);
-  let changed = false;
-  const projected = messages.map((message) => {
-    const row = project(message);
-    changed ||= row !== message;
-    return row;
-  });
-  return changed ? projected : messages;
+  return mapChatDisplayMessages(messages, createCurrentUserProfileMessageProjector(resolveDisplay));
 }
 
 type ChatDisplayProjectionResult = {
@@ -317,55 +315,81 @@ export function isPendingAssistantError(value: unknown): boolean {
     (isPureStreamErrorFallbackAssistantMessage(message) ||
       (Boolean(readSessionTranscriptRunId(message)) &&
         !hasAssistantDisplayableNonTextContent(message) &&
-        !hasVisibleAssistantDisplayContent(message)))
+        !hasTranscriptMediaFacts(message) &&
+        (!hasVisibleAssistantDisplayContent(message) ||
+          // Older projections stored the host error copy as assistant text. It
+          // is diagnostic-only, but partial answers and media must stay visible.
+          extractAssistantTextForSilentCheck(message)
+            ?.trim()
+            .replace(/^⚠️\s*/u, "") === CONTEXT_OVERFLOW_ERROR_MESSAGE)))
   );
 }
 
-function createRecoveredAssistantErrorProjection(initialPending = false) {
+/** Hidden retry prompts continue a turn; only a real user input ends recovery matching. */
+export function isChatHistoryRecoveryUserBoundary(value: unknown): boolean {
+  const message = asOptionalRecord(value);
+  return (
+    message?.role === "user" &&
+    !(message.display === false && asOptionalRecord(message.provenance)?.kind === "internal_system")
+  );
+}
+
+export function createChatHistoryRecoveryProjection(options?: ChatHistoryRecoveryOptions) {
+  const projectCoordination = createSubagentCoordinationHistoryProjection(
+    options?.subagentCoordination,
+  );
   const messages: Array<Record<string, unknown>> = [];
-  let unseenPending = initialPending;
+  let unseenPending = options?.assistantErrorPending ?? false;
   let recoveryObserved = false;
   let pendingIndexes: number[] = [];
   const repairedIndexes = new Set<number>();
-  return {
-    append(message: Record<string, unknown>) {
-      const index = messages.length;
-      messages.push(message);
-      if (message.role === "user") {
-        unseenPending = false;
-        pendingIndexes = [];
-        return;
-      }
-      if (isPendingAssistantError(message)) {
-        pendingIndexes.push(index);
-        return;
-      }
-      if (
-        (!unseenPending && pendingIndexes.length === 0) ||
-        !hasVisibleAssistantDisplayContent(message)
-      ) {
-        return;
-      }
-      // An incremental reader carries only a pending bit. It must reload raw
-      // history before deciding which previously emitted failures were recovered.
-      recoveryObserved ||= unseenPending;
+  const append = (message: Record<string, unknown>) => {
+    const index = messages.length;
+    messages.push(message);
+    if (isChatHistoryRecoveryUserBoundary(message)) {
       unseenPending = false;
-      const completedRunId =
-        (message.stopReason === "stop" || message.stopReason === "length") &&
-        !isTranscriptOnlyOpenClawAssistantMessage(message)
-          ? readSessionTranscriptRunId(message)
-          : undefined;
-      pendingIndexes = pendingIndexes.filter((pendingIndex) => {
-        const failedRunId = readSessionTranscriptRunId(messages[pendingIndex]);
-        // Unattributed legacy stream sentinels retain their existing turn-local
-        // repair. Runtime attempt failures require completion of the exact run.
-        if (failedRunId && failedRunId !== completedRunId) {
-          return true;
+      pendingIndexes = [];
+      return;
+    }
+    if (isPendingAssistantError(message)) {
+      pendingIndexes.push(index);
+      return;
+    }
+    if (
+      (!unseenPending && pendingIndexes.length === 0) ||
+      !hasVisibleAssistantDisplayContent(message)
+    ) {
+      return;
+    }
+    // An incremental reader carries only a pending bit. It must reload raw
+    // history before deciding which previously emitted failures were recovered.
+    recoveryObserved ||= unseenPending;
+    unseenPending = false;
+    const completedRunId =
+      (message.stopReason === "stop" || message.stopReason === "length") &&
+      !isTranscriptOnlyOpenClawAssistantMessage(message)
+        ? readSessionTranscriptRunId(message)
+        : undefined;
+    pendingIndexes = pendingIndexes.filter((pendingIndex) => {
+      const failedRunId = readSessionTranscriptRunId(messages[pendingIndex]);
+      // Unattributed legacy stream sentinels retain their existing turn-local
+      // repair. Runtime attempt failures require completion of the exact run.
+      if (failedRunId && failedRunId !== completedRunId) {
+        return true;
+      }
+      repairedIndexes.add(pendingIndex);
+      recoveryObserved = true;
+      return false;
+    });
+  };
+  return {
+    append(input: unknown[]) {
+      const projected = projectCoordination(prepareChatHistoryRecoveryMessages(input, options));
+      for (const message of toProjectedMessages(projected)) {
+        if (!isOpenClawMessageToolMirrorAssistantMessage(message)) {
+          append(message);
         }
-        repairedIndexes.add(pendingIndex);
-        recoveryObserved = true;
-        return false;
-      });
+      }
     },
     get pending() {
       return unseenPending || pendingIndexes.length > 0;
@@ -386,12 +410,10 @@ function createRecoveredAssistantErrorProjection(initialPending = false) {
 function projectEmptyAssistantErrorMessages(
   messages: Array<Record<string, unknown>>,
 ): Array<Record<string, unknown>> {
-  let changed = false;
-  const projected = messages.map((message) => {
+  return mapChatDisplayMessages(messages, (message) => {
     if (message.role !== "assistant" || message.stopReason !== "error") {
       return message;
     }
-    changed = true;
     const hasDisplayableStructuredContent =
       hasAssistantDisplayableNonTextContent(message) || hasTranscriptMediaFacts(message);
     if (hasDisplayableStructuredContent) {
@@ -415,7 +437,6 @@ function projectEmptyAssistantErrorMessages(
     delete next.text;
     return next;
   });
-  return changed ? projected : messages;
 }
 
 type ChatHistoryRecoveryOptions = Pick<
@@ -464,27 +485,6 @@ export function prepareChatHistoryRecoveryMessages(
     : stripEnvelopeFromMessages(projectedMessages);
 }
 
-export function createChatHistoryRecoveryProjection(options?: ChatHistoryRecoveryOptions) {
-  const projectCoordination = createSubagentCoordinationHistoryProjection(
-    options?.subagentCoordination,
-  );
-  const recovery = createRecoveredAssistantErrorProjection(options?.assistantErrorPending);
-  return {
-    append(messages: unknown[]) {
-      const projected = projectCoordination(prepareChatHistoryRecoveryMessages(messages, options));
-      for (const message of toProjectedMessages(projected)) {
-        if (!isOpenClawMessageToolMirrorAssistantMessage(message)) {
-          recovery.append(message);
-        }
-      }
-    },
-    get pending() {
-      return recovery.pending;
-    },
-    result: recovery.result.bind(recovery),
-  };
-}
-
 export function projectChatDisplayMessagesWithState(
   messages: unknown[],
   options?: ChatDisplayProjectionOptions,
@@ -520,6 +520,7 @@ export function projectChatDisplayMessagesWithState(
   const displayMessages = sanitizeChatHistoryMessages(
     mergeTtsSupplementMessages(filtered.messages),
     options?.maxChars ?? DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
+    { toolResultMaxChars: options?.toolResultMaxChars },
   ) as Array<Record<string, unknown>>;
   const result: ChatDisplayProjectionResult = {
     activity,
@@ -549,5 +550,34 @@ export function projectChatDisplayMessage(
   message: unknown,
   options?: ChatDisplayProjectionOptions,
 ): Record<string, unknown> | undefined {
-  return projectChatDisplayMessages([message], options)[0];
+  const projected = projectChatDisplayMessages([message], options);
+  if (
+    !options?.includeCommentaryFallbacks ||
+    !projected.some((entry) => entry.openclawStreamFallback)
+  ) {
+    return projected[0];
+  }
+  // A fetched source row restores all its visible fragments as one message.
+  const result: Record<string, unknown> = {
+    ...projected.at(-1),
+    content: projected.flatMap(({ content }) =>
+      Array.isArray(content)
+        ? content
+        : typeof content === "string"
+          ? [{ type: "text", text: content }]
+          : [],
+    ),
+  };
+  const truncated = projected
+    .map((entry) => asOptionalRecord(entry["__openclaw"]))
+    .find((metadata) => metadata?.truncated === true);
+  if (truncated) {
+    result["__openclaw"] = {
+      ...asOptionalRecord(result["__openclaw"]),
+      truncated: true,
+      reason: truncated.reason,
+    };
+  }
+  delete result.openclawStreamFallback;
+  return result;
 }

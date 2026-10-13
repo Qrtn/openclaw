@@ -74,14 +74,17 @@ afterEach(() => {
 });
 
 describe("createOpenAIFastModeWrapper", () => {
-  it("preserves Ultrafast on the direct API boundary", () => {
-    const { baseStreamFn, payloads } = createPayloadCapture();
-    const enabled = resolveOpenAIFastMode({ fastMode: "ultrafast" });
-    expect(enabled).toBe("ultrafast");
-    const wrapped = createOpenAIFastModeWrapper(baseStreamFn, () => enabled);
-    void wrapped(openaiModel, { messages: [] }, {});
-    expect(payloads[0]?.service_tier).toBe("ultrafast");
-  });
+  it.each(["https://api.openai.com/v1", "https://proxy.example/v1"])(
+    "preserves Ultrafast on the API boundary at %s",
+    (baseUrl) => {
+      const { baseStreamFn, payloads } = createPayloadCapture();
+      const enabled = resolveOpenAIFastMode({ fastMode: "ultrafast" });
+      expect(enabled).toBe("ultrafast");
+      const wrapped = createOpenAIFastModeWrapper(baseStreamFn, () => enabled);
+      void wrapped({ ...openaiModel, baseUrl }, { messages: [] }, {});
+      expect(payloads[0]?.service_tier).toBe("ultrafast");
+    },
+  );
 
   it("resolves dynamic fast mode for each stream call", () => {
     const { baseStreamFn, payloads } = createPayloadCapture();
@@ -225,7 +228,8 @@ describe("createCodexNativeWebSearchWrapper", () => {
     const diagnostic = String(logger.info.mock.calls[0]?.[0]);
     expect(diagnostic).toContain('"removedToolIdentities":["client:rogue"');
     expect(diagnostic).toContain('"hosted:file_search"');
-    expect(diagnostic).not.toContain(secretFixture);
+    // The logger receives raw metadata; its console/export boundaries own redaction.
+    expect(diagnostic).toContain(`"hosted:${secretFixture}"`);
   });
 
   it("emits one complete diagnostic through composed wrappers after async replacement", async () => {
@@ -531,12 +535,11 @@ describe("createCodexNativeWebSearchWrapper", () => {
       agentId: "main",
       config: {
         agents: {
-          list: [
-            {
-              id: "main",
+          entries: {
+            main: {
               tools: { deny: ["group:web"] },
             },
-          ],
+          },
         },
         tools: {
           web: {

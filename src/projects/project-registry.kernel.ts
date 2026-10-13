@@ -7,7 +7,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import { createOpenClawStateSchemaEnsurer } from "../state/openclaw-state-feature-schema.js";
+import { createOpenClawStateSchemaEnsurer } from "../state/openclaw-state-feature-schema-ensure.js";
 import type {
   ProjectRegistryIdentity,
   ProjectRegistryInsert,
@@ -33,19 +33,6 @@ function rowToProject(row: ProjectRow): ProjectRegistryRecord {
     // SAFETY: The canonical projects.source CHECK permits these two stored values.
     source: row.source as "registered" | "cloned",
   };
-}
-
-function allocateProjectId(base: string, existing: ReadonlySet<string>): string {
-  if (!existing.has(base)) {
-    return base;
-  }
-  for (let suffixNumber = 2; ; suffixNumber += 1) {
-    const suffix = `-${suffixNumber}`;
-    const candidate = `${base.slice(0, PROJECT_ID_MAX_LENGTH - suffix.length).replace(/-+$/u, "")}${suffix}`;
-    if (!existing.has(candidate)) {
-      return candidate;
-    }
-  }
 }
 
 export function insertProjectRegistryInDatabase(
@@ -75,7 +62,11 @@ export function insertProjectRegistryInDatabase(
     ),
   );
   const baseId = slugifyWorktreeTitle(input.displayName) ?? "project";
-  const id = allocateProjectId(baseId, existing);
+  let id = baseId;
+  for (let suffixNumber = 2; existing.has(id); suffixNumber++) {
+    const suffix = `-${suffixNumber}`;
+    id = `${baseId.slice(0, PROJECT_ID_MAX_LENGTH - suffix.length).replace(/-+$/u, "")}${suffix}`;
+  }
   const now = Date.now();
   const row = {
     id,
@@ -120,15 +111,6 @@ export function resolveRecordedProjectRootInDatabase(
   )?.repo_root;
 }
 
-function matchesProjectRecord(row: ProjectRow, project: ProjectRegistryIdentity): boolean {
-  return (
-    row.id === project.id &&
-    row.repo_root === project.repoRoot &&
-    row.source === project.source &&
-    (row.origin_url ?? undefined) === project.originUrl
-  );
-}
-
 function readMatchingProjectRow(
   database: DatabaseSync,
   project: ProjectRegistryIdentity,
@@ -138,7 +120,13 @@ function readMatchingProjectRow(
     database,
     db.selectFrom("projects").selectAll().where("id", "=", project.id),
   );
-  return row && matchesProjectRecord(row, project) ? row : undefined;
+  return row &&
+    row.id === project.id &&
+    row.repo_root === project.repoRoot &&
+    row.source === project.source &&
+    (row.origin_url ?? undefined) === project.originUrl
+    ? row
+    : undefined;
 }
 
 export function resolveProjectCloneRefreshOwnerInDatabase(

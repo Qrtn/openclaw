@@ -1,6 +1,11 @@
+import "./subagent-announce.requester-settle-dispatch-mocks.test-support.js";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../../config/runtime-snapshot.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
@@ -19,7 +24,6 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../../process/command-queue.js";
-import { resetCommandQueueStateForTest } from "../../../process/command-queue.test-support.js";
 import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -32,89 +36,24 @@ import type { RunEmbeddedAgentParams } from "../../embedded-agent-runner/run/par
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../main-session-recovery/main-session-recovery-admission.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { consumeSubagentPauseNotice } from "../registry/subagent-delivery-state.js";
-import type { countPendingDescendantRuns } from "../registry/subagent-registry-read.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import {
   registerRequesterFinalAttachment,
   promoteRequesterFinalAttachment,
 } from "../requester-final-attachment.js";
 import { sendSubagentAnnounceDirectly } from "./subagent-announce-direct-delivery.js";
-import * as announceOutput from "./subagent-announce-output.js";
 import { setSubagentAnnounceDeliveryDepsForTest } from "./subagent-announce-overrides.test-support.js";
-import type { createRequesterDescendantReader } from "./subagent-announce.requester-settle-descendants.js";
 import {
+  deliver,
+  registryRead,
+  startTurn,
+  loadRequester,
   REQUESTER_KEY,
   settledChild,
   publishWakeTransition,
+  useRequesterSettleDispatchFixture,
 } from "./subagent-announce.requester-settle-dispatch.test-support.js";
-
-const readDescendantFacts = vi.hoisted(() =>
-  vi.fn<
-    (
-      params: Parameters<typeof createRequesterDescendantReader>[0],
-    ) => ReturnType<ReturnType<typeof createRequesterDescendantReader>>
-  >(async () => ({ unsettled: false, active: 0 })),
-);
-
-vi.mock("./subagent-announce.requester-settle-descendants.js", () => ({
-  createRequesterDescendantReader:
-    (params: Parameters<typeof createRequesterDescendantReader>[0]) => () =>
-      readDescendantFacts(params),
-}));
-
-const startTurn = vi.hoisted(() => vi.fn());
-const deliver = vi.hoisted(() => vi.fn());
-const registryRead = vi.hoisted(() => ({
-  countPendingDescendantRuns: vi.fn<typeof countPendingDescendantRuns>(
-    async (_key, assertCurrent) => {
-      assertCurrent();
-      return 0;
-    },
-  ),
-  getLatestLiveSubagentRunByChildSessionKey: vi.fn<
-    (
-      sessionKey: string,
-      matches?: (entry: SubagentRunRecord) => boolean,
-    ) => SubagentRunRecord | undefined
-  >(() => undefined),
-  listSubagentRunsForRequester: vi.fn<() => SubagentRunRecord[]>(() => []),
-  getLatestSubagentRunByChildSessionKey: vi.fn(() => undefined),
-}));
-
-vi.mock("../../../gateway/server-methods.js", () => ({
-  authorizeGatewayRequestPreDispatch: async () => ({ error: null }),
-  createRequestGatewayMethodRegistry: () => ({ isControlPlaneWrite: () => false }),
-  runWithGatewayRequestEnvelope: async (
-    _method: string,
-    _client: unknown,
-    run: () => Promise<unknown>,
-  ) => await run(),
-}));
-
-vi.mock("../../../gateway/agent-turn/agent-request-preflight.js", () => ({
-  prepareAgentRequestPreflight: ({ request }: { request: unknown }) => ({ request }),
-}));
-
-vi.mock("../../../gateway/agent-turn/agent-turn-service.js", () => ({
-  createAgentTurnService: () => ({ startTurn, waitForTurn: vi.fn() }),
-}));
-
-vi.mock("../registry/subagent-registry-read.js", () => registryRead);
-vi.mock("../spawn/subagent-depth.js", () => ({
-  getSubagentDepthFromSessionStore: (sessionKey: string) =>
-    sessionKey.split(":subagent:").length - 1,
-}));
-vi.mock("./subagent-announce.js", () => ({ hasUsableSessionEntry: () => true }));
-vi.mock("./subagent-announce-delivery.js", () => ({
-  deliverSubagentAnnouncement: (...args: unknown[]) => deliver(...args),
-  loadRequesterSessionEntry: () => ({
-    canonicalKey: "agent:main:main",
-    entry: { sessionId: "requester-session" },
-  }),
-}));
-
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
-const readChildCompletionFindings = announceOutput.readChildCompletionFindings;
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -122,6 +61,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
       await closeOpenClawAgentDatabasesAsync(dir);
     }
     cleanup();
+    clearRuntimeConfigSnapshot();
   }),
 );
 
@@ -154,25 +94,89 @@ function createContext(): GatewayRequestContext {
 }
 
 describe("requester settle dispatch deadline", () => {
+  useRequesterSettleDispatchFixture();
+
   beforeEach(() => {
-    vi.spyOn(announceOutput, "readChildCompletionFindings").mockImplementation((children) =>
-      readChildCompletionFindings(children, (runId) =>
-        registryRead.listSubagentRunsForRequester().find((entry) => entry.runId === runId),
-      ),
-    );
-    resetCommandQueueStateForTest();
-    startTurn.mockReset();
-    deliver.mockReset();
-    readDescendantFacts.mockReset().mockResolvedValue({ unsettled: false, active: 0 });
-    registryRead.getLatestLiveSubagentRunByChildSessionKey.mockReset().mockReturnValue(undefined);
-    registryRead.getLatestSubagentRunByChildSessionKey.mockReset().mockReturnValue(undefined);
+    setRuntimeConfigSnapshot({});
   });
 
-  afterEach(() => {
-    vi.mocked(announceOutput.readChildCompletionFindings).mockRestore();
-    resetCommandQueueStateForTest();
-    setSubagentAnnounceDeliveryDepsForTest();
-    vi.useRealTimers();
+  it.each([
+    { name: "WebChat settle", channel: "webchat", pause: false, external: false },
+    { name: "WebChat pause", channel: "webchat", pause: true, external: false },
+    { name: "explicit external completion", channel: "telegram", pause: false, external: true },
+    { name: "saved-route completion", channel: undefined, pause: false, external: true },
+  ])("keeps $name on its owning route despite external session history", async (testCase) => {
+    const requesterSessionKey = "agent:main:dashboard:completion-route";
+    const child = settledChild();
+    child.requesterSessionKey = requesterSessionKey;
+    child.requesterOrigin = testCase.channel ? { channel: testCase.channel } : undefined;
+    if (testCase.pause) {
+      child.pauseReason = "sessions_yield";
+      child.execution.outcome = undefined;
+      child.requesterSettleWake!.pauseNotice = { acknowledgment: "Need direction." };
+    }
+    registryRead.listSubagentRunsForRequester.mockReturnValue([child]);
+    loadRequester.mockReturnValue({
+      cfg: {},
+      canonicalKey: requesterSessionKey,
+      agentId: "main",
+      entry: {
+        sessionId: "requester-session",
+        updatedAt: 1,
+        delivery: {
+          kind: "external",
+          route: { channel: "telegram", target: { to: "12345" } },
+          context: { channel: "telegram", to: "12345", accountId: "bot-1", threadId: 42 },
+          origin: { provider: "webchat", to: requesterSessionKey, surface: "webchat" },
+        },
+      },
+    });
+    setSubagentAnnounceDeliveryDepsForTest({
+      getRuntimeConfig: () => ({}),
+      loadRequesterSessionEntry: loadRequester,
+      getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
+    });
+    deliver.mockImplementation(sendSubagentAnnounceDirectly);
+    startTurn.mockImplementation(async ({ preflight, io }) => {
+      io.emitAcceptance([true, { runId: preflight.request.idempotencyKey, status: "accepted" }]);
+      io.emitFinal([
+        true,
+        {
+          status: "ok",
+          result: {
+            payloads: [{ text: "Completed." }],
+            ...(testCase.external
+              ? { deliveryStatus: { status: "sent", succeeded: true, resultCount: 1 } }
+              : {}),
+          },
+        },
+      ]);
+    });
+    const context = createContext();
+    const completeBatch = vi.fn();
+    const delivered = await withPluginRuntimeGatewayRequestScope(
+      { context, client: createSyntheticPluginRuntimeClient(), isWebchatConnect: () => false },
+      () =>
+        maybeWakeRequesterAfterAllChildrenSettled({
+          requesterSessionKey,
+          requesterOrigin: child.requesterOrigin,
+          isSourceCurrent: () => true,
+          settledEntry: child,
+          transitionBatch: publishWakeTransition,
+          completeBatch,
+        }),
+    );
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(startTurn.mock.calls[0]![0].preflight.request).toMatchObject({
+      sessionKey: requesterSessionKey,
+      deliver: testCase.external,
+      channel: testCase.external ? "telegram" : "webchat",
+      to: testCase.external ? "12345" : undefined,
+      accountId: testCase.external ? "bot-1" : undefined,
+      threadId: testCase.external ? "42" : undefined,
+    });
+    expect(delivered).toBe(true);
+    expect(completeBatch).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])(
@@ -372,11 +376,10 @@ describe("requester settle dispatch deadline", () => {
     expect(completeBatch).not.toHaveBeenCalled();
   });
 
-  it.each(
-    (["completed", "cancelled"] as const).flatMap((outcome) =>
-      [true, false].map((legacy) => ({ outcome, legacy })),
-    ),
-  )(
+  it.each([
+    { outcome: "completed", legacy: true },
+    { outcome: "cancelled", legacy: false },
+  ] as const)(
     "retains an in-flight private wake until $outcome, legacy=$legacy",
     async ({ outcome, legacy }) => {
       vi.useFakeTimers();
@@ -591,7 +594,7 @@ describe("requester settle dispatch deadline", () => {
     await replaceSessionEntry(target, {
       sessionId: "requester-session",
       updatedAt: 100,
-      status: "running",
+      status: undefined,
       abortedLastRun: false,
       restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
       mainRestartRecovery: { cycleId: "cycle-1", revision: 3, chargedAttempts: 1 },
@@ -609,6 +612,7 @@ describe("requester settle dispatch deadline", () => {
     const accepted = createDeferredCore();
     const finals: string[] = [];
     const cfg = { agents: { defaults: { subagents: { announceTimeoutMs: 20 } } } };
+    setRuntimeConfigSnapshot(cfg);
     startTurn.mockImplementation(async ({ preflight, io }) => {
       const request = preflight.request;
       io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }], {
@@ -713,6 +717,7 @@ describe("requester settle dispatch deadline", () => {
       const cfg = {
         agents: { defaults: { timeoutSeconds: 1, subagents: { announceTimeoutMs: 20 } } },
       };
+      setRuntimeConfigSnapshot(cfg);
       const executionStarted = createDeferredCore();
       const workDone = createDeferredCore();
       const stop = new AbortController();

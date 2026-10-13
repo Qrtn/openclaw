@@ -13,10 +13,11 @@ import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { readUserProfileAliases } from "../../state/user-profile-list.js";
 import { hasMultipleSessionSharingIdentities } from "../../state/user-profiles.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
-import { operatorSessionCap } from "../operator-role-policy.js";
+import { operatorSessionCap, resolveGatewayOperatorRoleActor } from "../operator-role-policy.js";
 import { prepareSessionCreatorProfile } from "../session-creator.js";
 import { requireSessionRowProjection } from "../session-row-projection-access.js";
-import { resolveSessionSharingRole, resolveSessionSharingTarget } from "../session-sharing.js";
+import { sharingIdentity } from "../session-sharing-policy.js";
+import { resolveSessionSharingRole, resolveSessionSharingTargetAsync } from "../session-sharing.js";
 import { createSessionCatalogRequestEntrySnapshot } from "./session-catalog-entry-snapshot.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
@@ -139,8 +140,8 @@ export async function resolveSessionCatalogThreadVisibility(params: {
   threadId: string;
 }): Promise<SessionCatalogThreadVisibility | null> {
   const projection = requireSessionRowProjection(params.context);
-  while (projection.needsMaterialization) {
-    await projection.ensureMaterialized();
+  while (projection.needsSelectionPreparation()) {
+    await projection.prepareSelection();
   }
   let config = params.context.getRuntimeConfig();
   let visibility = resolveSessionCatalogVisibility(params.client, config);
@@ -176,8 +177,8 @@ export async function resolveSessionCatalogThreadVisibility(params: {
     }
     // Providers may populate planning entries before awaiting IO. Re-read privacy and caller
     // policy after enumeration, before granting read or mutation authority.
-    while (projection.needsMaterialization) {
-      await projection.ensureMaterialized();
+    while (projection.needsSelectionPreparation()) {
+      await projection.prepareSelection();
     }
     config = params.context.getRuntimeConfig();
     visibility = resolveSessionCatalogVisibility(params.client, config);
@@ -226,11 +227,23 @@ export async function resolveSessionCatalogThreadVisibility(params: {
       ) {
         return { visibility, source: { sessionKey: session.sessionKey, entry: visibleEntry } };
       }
-      const target = session.sessionKey
-        ? resolveSessionSharingTarget({ cfg: config, sessionKey: session.sessionKey })
-        : null;
+      const target = await resolveSessionSharingTargetAsync({
+        cfg: config,
+        sessionKey: session.sessionKey,
+      });
+      const identity = sharingIdentity(
+        params.client,
+        resolveGatewayOperatorRoleActor(params.client),
+      );
       return target !== null &&
-        resolveSessionSharingRole({ cfg: config, client: params.client, target }) === "member"
+        resolveSessionSharingRole({
+          cfg: params.context.getRuntimeConfig(),
+          client: params.client,
+          target,
+          isMember: Boolean(
+            identity && projection.hasMembership(target.storePath, target.storeKey, identity.id),
+          ),
+        }) === "member"
         ? { visibility, source: { sessionKey: target.canonicalKey, entry: visibleEntry } }
         : null;
     }

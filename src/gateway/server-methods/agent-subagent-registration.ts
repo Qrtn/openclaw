@@ -1,5 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { resolveAgentIdFromSessionKey, resolveAgentMainSessionKey } from "../../config/sessions.js";
+import { resolveAgentMainSessionKey } from "../../config/sessions.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
@@ -71,7 +71,7 @@ export async function registerPluginSubagentRunFromGateway(params: {
   cfg: OpenClawConfig;
   runId: string;
   childSessionKey: string;
-  childAgentId?: string;
+  childAgentId: string;
   task: string;
   requester?: PluginSubagentRequesterContext;
   pluginId?: string;
@@ -81,14 +81,18 @@ export async function registerPluginSubagentRunFromGateway(params: {
   const { childSessionKey } = params;
   const ownerSessionKey = resolveAgentMainSessionKey({
     cfg: params.cfg,
-    agentId: resolveAgentIdFromSessionKey(childSessionKey),
+    agentId: params.childAgentId,
   });
   const requesterSessionKey = params.requester?.sessionKey ?? ownerSessionKey;
-  const { adoptPausedSubagentRunForFollowUp, registerSubagentRun } =
-    await import("../../agents/subagents/registry/subagent-registry.js");
+  const {
+    adoptPausedSubagentRunForFollowUp,
+    adoptPausedSubagentRunIntoSuccessor,
+    registerSubagentRun,
+  } = await import("../../agents/subagents/registry/subagent-registry.js");
   const sessionEntry = params.assertCurrent();
   // Resume a yielded run with its original audience unless the follow-up names
-  // a requester and therefore owns a separate delivery.
+  // a requester and therefore owns a separate delivery. Recheck after sibling
+  // registration in case the pause publishes while admission is in flight.
   if (
     !params.requester &&
     (await adoptPausedSubagentRunForFollowUp({
@@ -121,4 +125,11 @@ export async function registerPluginSubagentRunFromGateway(params: {
     },
     { assertCurrent: params.assertCurrent },
   );
+  if (!params.requester) {
+    await adoptPausedSubagentRunIntoSuccessor({
+      childSessionKey,
+      childAgentId: params.childAgentId,
+      assertCurrent: params.assertCurrent,
+    });
+  }
 }

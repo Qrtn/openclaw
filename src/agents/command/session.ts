@@ -11,9 +11,9 @@ import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.defaul
 import { hasProviderOwnedSession } from "../../config/sessions/entry-freshness.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import {
-  hasTerminalMainSessionTranscriptNewerThanRegistrySync,
-  resolveSessionLifecycleTimestamps,
-} from "../../config/sessions/lifecycle.js";
+  hasTerminalMainSessionTranscriptNewerThanRegistryAsync,
+  resolveSessionLifecycleTimestampsAsync,
+} from "../../config/sessions/lifecycle-read.js";
 import {
   canonicalizeMainSessionAlias,
   resolveAgentIdFromSessionKey,
@@ -25,11 +25,12 @@ import {
   resolveSessionResetPolicy,
 } from "../../config/sessions/reset-policy.js";
 import { resolveChannelResetConfig, resolveSessionResetType } from "../../config/sessions/reset.js";
+import type { SessionEntrySummary } from "../../config/sessions/session-accessor.types.js";
 import {
-  listSessionEntriesReadOnly,
-  loadExactSessionEntryReadOnly,
-  type SessionEntrySummary,
-} from "../../config/sessions/session-accessor.js";
+  readSessionEntryReadOnlyInWorker,
+  withSessionStoreReaderInWorker,
+} from "../../config/sessions/session-entry-read-runtime.js";
+import { captureIncognitoSessionSource } from "../../config/sessions/session-incognito-binding.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target-paths.js";
 import {
@@ -104,6 +105,7 @@ export function clearRotatedSessionMetadata(entry: InternalSessionEntry): Intern
     restartRecoveryDeliveryRequestFingerprint: undefined,
     restartRecoveryDeliveryRunId: undefined,
     restartRecoveryDeliverySourceRunId: undefined,
+    restartRecoveryOperatorSource: undefined,
     restartRecoveryBeforeAgentReplyState: undefined,
     restartRecoveryDeliveryReceiptState: undefined,
     restartRecoveryDeliveryToolCallId: undefined,
@@ -162,15 +164,21 @@ function selectSessionIdMatchCandidate(
     })[0];
 }
 
-function loadCommandSessionEntries(params: {
+async function loadCommandSessionEntries(params: {
   agentId?: string;
   storePath: string;
-}): SessionEntrySummary[] {
-  return listSessionEntriesReadOnly({
-    storePath: params.storePath,
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    clone: false,
-  });
+}): Promise<SessionEntrySummary[]> {
+  return withSessionStoreReaderInWorker(
+    params,
+    async ({ reader, database, continuation }) => {
+      const result = await reader.readEntries(
+        { agentId: database.agentId, storePath: database.path, env: database.env },
+        continuation,
+      );
+      return result.entries;
+    },
+    { backing: true, dataOnly: true },
+  );
 }
 
 export function buildExplicitSessionIdSessionKey(params: {
@@ -180,14 +188,14 @@ export function buildExplicitSessionIdSessionKey(params: {
   return `agent:${normalizeAgentId(params.agentId)}:explicit:${params.sessionId.trim()}`;
 }
 
-function collectSessionIdMatchesForRequest(opts: {
+async function collectSessionIdMatchesForRequest(opts: {
   cfg: OpenClawConfig;
   sessionEntries: SessionEntrySummary[];
   storePath: string;
   storeAgentId?: string;
   sessionId: string;
   searchOtherAgentStores: boolean;
-}): SessionIdMatchSet {
+}): Promise<SessionIdMatchSet> {
   const candidates: SessionIdMatchCandidate[] = [];
   let ownerConflict = false;
   const configuredAgentIds = listAgentIds(opts.cfg).map(normalizeAgentId);
@@ -286,7 +294,7 @@ function collectSessionIdMatchesForRequest(opts: {
     }
     const candidateStorePath = resolveSessionStorePathCore(opts.cfg.session?.store, { agentId });
     addMatches(
-      loadCommandSessionEntries({
+      await loadCommandSessionEntries({
         agentId,
         storePath: candidateStorePath,
       }),
@@ -303,11 +311,11 @@ function collectSessionIdMatchesForRequest(opts: {
  * This scopes the lookup to the target store without implicitly converting `agentId`
  * into that agent's main session key.
  */
-export function resolveStoredSessionKeyForSessionId(opts: {
+export async function resolveStoredSessionKeyForSessionId(opts: {
   cfg: OpenClawConfig;
   sessionId: string;
   agentId?: string;
-}): SessionKeyResolution {
+}): Promise<SessionKeyResolution> {
   const sessionId = opts.sessionId.trim();
   const requestedAgentId = opts.agentId?.trim() ? normalizeAgentId(opts.agentId) : undefined;
   const persistedStoreOwner = resolvePersistedSessionStoreOwner(opts.cfg);
@@ -322,7 +330,7 @@ export function resolveStoredSessionKeyForSessionId(opts: {
   const storePath = resolveSessionStorePathCore(opts.cfg.session?.store, {
     agentId: storeAgentId,
   });
-  const sessionEntries = loadCommandSessionEntries({
+  const sessionEntries = await loadCommandSessionEntries({
     storePath,
     agentId: storeAgentId,
   });
@@ -390,9 +398,9 @@ export function resolveStoredSessionKeyForSessionId(opts: {
   };
 }
 
-function resolveSessionKeyForRequestInternal(
-  opts: SessionRequest & { createMissingSessionId: boolean },
-): SessionKeyResolution {
+async function resolveSessionKeyForRequestInternal(
+  opts: SessionRequest & { createMissingSessionId: boolean; prepareBoundEntry?: boolean },
+): Promise<SessionKeyResolution> {
   const sessionCfg = opts.cfg.session;
   const scope = sessionCfg?.scope ?? "per-sender";
   const mainKey = normalizeMainKey(sessionCfg?.mainKey);
@@ -493,12 +501,21 @@ function resolveSessionKeyForRequestInternal(
   // Exclusion and lookup share the persisted locator; routing keeps the request key.
   const storeSessionKey = sessionKey ? normalizeStoreSessionKey(sessionKey) : undefined;
   const sessionEntry =
-    storeSessionKey && !isInternalSessionEffectsKey(storeSessionKey)
-      ? loadExactSessionEntryReadOnly({
+    storeSessionKey &&
+    !isInternalSessionEffectsKey(storeSessionKey) &&
+    !(
+      opts.prepareBoundEntry &&
+      captureIncognitoSessionSource({
+        agentId: storeAgentId,
+        storePath,
+        sessionKey: storeSessionKey,
+      })
+    )
+      ? await readSessionEntryReadOnlyInWorker({
           agentId: storeAgentId,
           storePath,
           sessionKey: storeSessionKey,
-        })?.entry
+        })
       : undefined;
 
   // If a session id was provided, prefer to re-use its existing entry (by id) even when no key was
@@ -510,9 +527,9 @@ function resolveSessionKeyForRequestInternal(
     (!explicitSessionKey || unownedBareSessionKey) &&
     (!sessionKey || sessionEntry?.sessionId !== requestedSessionId)
   ) {
-    const { candidates, ownerConflict } = collectSessionIdMatchesForRequest({
+    const { candidates, ownerConflict } = await collectSessionIdMatchesForRequest({
       cfg: opts.cfg,
-      sessionEntries: loadCommandSessionEntries({ storePath, agentId: storeAgentId }),
+      sessionEntries: await loadCommandSessionEntries({ storePath, agentId: storeAgentId }),
       storePath,
       storeAgentId,
       sessionId: requestedSessionId,
@@ -565,22 +582,41 @@ export function resolveExistingSessionKeyForRequest(opts: {
   cfg: OpenClawConfig;
   sessionId: string;
   agentId?: string;
-}): SessionKeyResolution {
+}): Promise<SessionKeyResolution> {
   return resolveSessionKeyForRequestInternal({ ...opts, createMissingSessionId: false });
 }
 
-export function resolveSessionKeyForRequestCore(opts: SessionRequest): SessionKeyResolution {
+export function resolveSessionKeyForRequestCore(
+  opts: SessionRequest,
+): Promise<SessionKeyResolution> {
   return resolveSessionKeyForRequestInternal({ ...opts, createMissingSessionId: true });
 }
 
-export function resolveSession(opts: SessionRequest): SessionResolution {
+export async function resolveSession(
+  opts: SessionRequest & { signal?: AbortSignal; assertCurrent?: () => void },
+): Promise<SessionResolution> {
   const sessionCfg = opts.cfg.session;
   const {
     agentId: resolvedAgentId,
     sessionKey,
-    sessionEntry,
+    sessionEntry: routedEntry,
     storePath,
-  } = resolveSessionKeyForRequestCore(opts);
+  } = await resolveSessionKeyForRequestInternal({
+    ...opts,
+    createMissingSessionId: true,
+    prepareBoundEntry: true,
+  });
+  const scope = { agentId: resolvedAgentId, sessionKey: sessionKey ?? "", storePath };
+  const sessionEntry =
+    sessionKey && !isInternalSessionEffectsKey(sessionKey) && captureIncognitoSessionSource(scope)
+      ? await readSessionEntryReadOnlyInWorker(
+          { ...scope, sessionKey: normalizeStoreSessionKey(sessionKey) },
+          () => {
+            opts.signal?.throwIfAborted();
+            opts.assertCurrent?.();
+          },
+        )
+      : routedEntry;
   const now = Date.now();
 
   const sessionAgentId =
@@ -606,13 +642,14 @@ export function resolveSession(opts: SessionRequest): SessionResolution {
   const requestedSessionId = opts.sessionId?.trim() || undefined;
   const terminalMainTranscriptNewerThanRegistry =
     sessionEntry && !requestedSessionId
-      ? hasTerminalMainSessionTranscriptNewerThanRegistrySync({
+      ? await hasTerminalMainSessionTranscriptNewerThanRegistryAsync({
           entry: sessionEntry,
           sessionScope: sessionCfg?.scope,
           sessionKey,
           agentId: sessionAgentId,
           mainKey: sessionCfg?.mainKey,
           storePath,
+          signal: opts.signal,
         })
       : false;
   const lockedModelSelection = isModelSelectionLocked(sessionEntry);
@@ -624,16 +661,21 @@ export function resolveSession(opts: SessionRequest): SessionResolution {
         (skipImplicitExpiry ||
           evaluateSessionFreshness({
             updatedAt: sessionEntry.updatedAt,
-            ...resolveSessionLifecycleTimestamps({
-              entry: sessionEntry,
-              agentId: sessionAgentId,
-              sessionKey,
-              storePath,
-            }),
+            ...(sessionKey
+              ? await resolveSessionLifecycleTimestampsAsync({
+                  entry: sessionEntry,
+                  agentId: sessionAgentId,
+                  sessionKey,
+                  storePath,
+                  signal: opts.signal,
+                })
+              : {}),
             now,
             policy: resetPolicy,
           }).fresh))
     : false;
+  opts.signal?.throwIfAborted();
+  opts.assertCurrent?.();
   const sessionId =
     requestedSessionId || (fresh ? sessionEntry?.sessionId : undefined) || crypto.randomUUID();
   const isNewSession = !fresh && !requestedSessionId;

@@ -1,9 +1,14 @@
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withTempHome } from "../plugin-sdk/test-env.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { createPluginRecord } from "./loader-records.js";
 import { createRuntimeTestRegistry } from "./registry-runtime.test-helpers.js";
 import { createPluginRuntime } from "./runtime/index.js";
@@ -12,9 +17,11 @@ import type { PluginRuntime } from "./runtime/types.js";
 describe("plugin registry SQLite session ownership", () => {
   it("resolves unscoped worker keys through the configured default agent", async () => {
     await withTempHome(async () => {
-      const config = {
-        agents: { list: [{ id: "researcher", default: true }] },
-      } as OpenClawConfig;
+      const config: OpenClawConfig = {
+        agents: { entries: { researcher: {} } },
+      };
+      setRuntimeConfigSnapshot(config);
+      onTestFinished(clearRuntimeConfigSnapshot);
       const subagent = {
         complete: vi.fn(async () => ({ text: "completed" })),
         run: vi.fn(async () => ({ runId: "workboard-run" })),
@@ -89,7 +96,8 @@ describe("plugin registry SQLite session ownership", () => {
           },
         );
         const pending = api.runtime.subagent.run({ sessionKey, message: "continue" });
-        runtimeConfig = { agents: { list: [{ id: "replacement", default: true }] } };
+        runtimeConfig = { agents: { entries: { replacement: {} } } };
+        setRuntimeConfigSnapshot(runtimeConfig);
         await expect(pending).rejects.toThrow('owned by plugin "harness-owner"');
         expect(subagent.run).toHaveBeenCalledOnce();
       } finally {
@@ -100,6 +108,8 @@ describe("plugin registry SQLite session ownership", () => {
 
   it("keeps embedded incognito ID scans in the key's agent store", async () => {
     await withTempHome(async (home) => {
+      setRuntimeConfigSnapshot({});
+      onTestFinished(clearRuntimeConfigSnapshot);
       const sessionKey = "agent:researcher:dashboard:incognito-ownership-check";
       const sessionId = "incognito-session";
       const lockedKey = "agent:researcher:dashboard:incognito-locked-owner";
@@ -176,6 +186,7 @@ describe("plugin registry SQLite session ownership", () => {
           }),
         ).rejects.toThrow('owned by plugin "harness-owner"');
         expect(runEmbeddedAgent).toHaveBeenCalledOnce();
+        expect(captureOpenClawAgentDatabaseExecution.listIncognito()).toEqual([]);
       } finally {
         closeOpenClawAgentDatabasesForTest();
       }

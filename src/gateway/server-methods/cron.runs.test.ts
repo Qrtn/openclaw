@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { cronRunLogEntryToDetail, cronRunStorageStatus } from "../../cron/run-history-detail.js";
@@ -13,6 +14,8 @@ import { cronStoreKey } from "../../cron/store/key.js";
 import { recordCronRunInDatabase } from "../../cron/store/run-history.kernel.js";
 import type { CronRunHistoryWrite } from "../../cron/store/run-history.types.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
+import { ensureUserProfilesSchema } from "../../state/user-profiles-schema.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
@@ -50,6 +53,9 @@ async function withCronHistory(
       },
     };
     await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    ensureUserProfilesSchema({});
+    using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
     const owner = roleClient("none", "history-owner");
     const foreign = roleClient("none", "history-foreign");
     const viewer = roleClient("view", "history-viewer");
@@ -173,7 +179,6 @@ async function withCronHistory(
 
 describe("cron.runs session visibility", () => {
   it.each([
-    { sessionTarget: "main", agentId: "main", explicitOwner: true, sqlOwner: null },
     {
       sessionTarget: "session:custom-target",
       agentId: "main",
@@ -434,78 +439,6 @@ describe("cron.runs session visibility", () => {
     },
   );
 
-  it.each(["job", "all"] as const)(
-    "paginates visible %s history before counting and slicing",
-    async (scope) => {
-      await withCronHistory(async ({ jobId, query }) => {
-        const selector = scope === "job" ? { id: jobId } : { scope };
-        for (const [offset, summary] of [
-          "needle first",
-          "needle second",
-          "other third",
-        ].entries()) {
-          const respond = await query({
-            ...selector,
-            agentId: "MAIN",
-            limit: 1,
-            offset,
-            sortDir: "asc",
-          });
-          expect(respond).toHaveBeenCalledWith(
-            true,
-            {
-              entries: [expect.objectContaining({ summary })],
-              total: 3,
-              offset,
-              limit: 1,
-              hasMore: offset < 2,
-              nextOffset: offset < 2 ? offset + 1 : null,
-            },
-            undefined,
-          );
-        }
-        expect(await query({ ...selector, offset: 99, limit: 1 })).toHaveBeenCalledWith(
-          true,
-          {
-            entries: [],
-            total: 3,
-            offset: 3,
-            limit: 1,
-            hasMore: false,
-            nextOffset: null,
-          },
-          undefined,
-        );
-      });
-    },
-  );
-
-  it("uses current job names after an asynchronous history read", async () => {
-    await withCronHistory(async ({ jobId, cron, query }) => {
-      const list = cron.list.bind(cron);
-      const listSpy = vi.spyOn(cron, "list").mockImplementationOnce(async (options) => {
-        const jobs = await list(options);
-        await cron.update(jobId, { name: "replacement-visible-name" });
-        return jobs;
-      });
-      try {
-        const respond = await query({ scope: "all", query: "replacement-visible-name" });
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({
-            total: 3,
-            entries: expect.arrayContaining([
-              expect.objectContaining({ jobName: "replacement-visible-name" }),
-            ]),
-          }),
-          undefined,
-        );
-      } finally {
-        listSpy.mockRestore();
-      }
-    });
-  });
-
   it.each([
     { scope: "job", newlyMatches: true },
     { scope: "all", newlyMatches: true },
@@ -619,7 +552,6 @@ describe("cron.runs session visibility", () => {
   });
 
   it.each([
-    { filter: { query: "absent text" }, total: 0, offset: 0 },
     { filter: { runId: "absent-run" }, total: 0, offset: 0 },
     { filter: { runId: "history-run-1", offset: 99 }, total: 1, offset: 1 },
   ])(

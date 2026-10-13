@@ -5,10 +5,13 @@ import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
 } from "../../../infra/agent-events.js";
+import { readExecRequestOwners } from "../../../infra/exec-request-context.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
-  normalizeAgentIdStrict,
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
+} from "../../../plugins/runtime/gateway-request-scope.js";
+import {
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../../../routing/session-key.js";
@@ -22,11 +25,20 @@ import {
   clearPublishedSwarmCollectorOutput,
   updateSwarmCollectorCompletion,
 } from "../swarm/swarm-collector.js";
-import { bindSwarmRunReservation } from "../swarm/swarm-scheduler.js";
-import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
-import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
-import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
+import { bindSwarmRunReservation, ownsSwarmRunReservation } from "../swarm/swarm-scheduler.js";
 import {
+  matchesSubagentChildSessionOwner,
+  resolveSubagentChildAgentId,
+} from "./subagent-child-owner-match.js";
+import { bindSubagentExecRequestOwners } from "./subagent-exec-request-ownership.js";
+import { prepareSubagentRegistrationRows } from "./subagent-registration-rows.js";
+import {
+  getCurrentSubagentRunOwner,
+  subagentRuns,
+  waitForSubagentRetirementPublication,
+} from "./subagent-registry-memory.js";
+import {
+  SubagentRegistryVersionConflictError,
   SubagentRegistryWriteError,
   assertSubagentRegistryWriteSourceCurrent,
   mutateSubagentRuns,
@@ -35,6 +47,7 @@ import {
 } from "./subagent-registry-persistence.js";
 import { registerRequiredQueuedSubagent } from "./subagent-registry-queued-registration.js";
 import {
+  createFailedQueuedRun,
   createSubagentRegistrationRecord,
   type RegisterSubagentRunParams,
 } from "./subagent-registry-run-launch-record.js";
@@ -46,8 +59,10 @@ import type {
 } from "./subagent-registry.types.js";
 import {
   bindSubagentRunRuntimeKey,
+  compareSubagentRunGeneration,
   getSubagentRunRuntimeKey,
   isSameSubagentRunOwner,
+  isSubagentRunGenerationCandidate,
   latestSubagentRun,
   nextSubagentRunGeneration,
 } from "./subagent-run-generation.js";
@@ -105,88 +120,142 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const cfg = this.options.getRuntimeConfig();
     const requesterAgentId = resolveSubagentRequesterAgentId(cfg, registerParams);
     const controllerSessionKey = registerParams.controllerSessionKey?.trim() || requesterSessionKey;
-    const keyAgentId = parseAgentSessionKey(childSessionKey)?.agentId;
-    const explicitChildAgentId =
-      registerParams.childAgentId === undefined
-        ? undefined
-        : normalizeAgentIdStrict(registerParams.childAgentId);
-    if (explicitChildAgentId && !explicitChildAgentId.ok) {
-      throw new Error("Subagent registration has an invalid child agent id.");
+    const childAgentId = resolveSubagentChildAgentId(registerParams);
+    if (registerParams.childAgentId === undefined || !childAgentId) {
+      throw new Error(
+        "Subagent registration requires an explicit valid child agent matching its session key.",
+      );
     }
-    if (keyAgentId && explicitChildAgentId && keyAgentId !== explicitChildAgentId.value) {
-      throw new Error("Subagent registration child agent disagrees with its session key.");
+    if (!registerParams.sessionEntry?.sessionId?.trim()) {
+      throw new Error(
+        "Subagent registration requires the original child sessionId. Inspect the created child and its run before retrying; do not register a replacement from the current session key.",
+      );
     }
     const context = captureOpenClawStateWorkerContext();
-    const selected = this.options.runs.get(runId);
-    const childAgentId = selected
-      ? selected.childAgentId
-      : keyAgentId
-        ? undefined
-        : explicitChildAgentId?.value;
+    const gatewayContextResolver = registerParams.gatewayContextResolver;
+    const gatewayContext = gatewayContextResolver?.();
+    let selected = this.options.runs.get(runId);
     const registrationOwnership = subagentRuns.captureRegistrationOwnership(
       childSessionKey,
       undefined,
       childAgentId,
     );
     let authority: Awaited<ReturnType<typeof captureOperatorToolGatewayContinuationContext>>;
+    let preparedRows: Map<string, SubagentRunRecord> | undefined;
+    let plannedEntry: SubagentRunRecord | undefined;
     let registered: SubagentRunRecord | undefined;
     let custodyTransferred = false;
     let queuedScope: SubagentRegistrationScope | undefined;
     let initialOutcome: "pending" | "refused" | "uncertain" = "pending";
     let initialFailure: unknown;
-    const canCleanupRefusedIntent = () => {
-      if (
-        initialOutcome !== "refused" ||
-        this.options.runs.has(runId) ||
-        [...this.options.getRunsForChildSession(childSessionKey, childAgentId)].length > 0 ||
-        !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)
-      ) {
-        return false;
-      }
+    let registrationSettled = false;
+    let activated = false;
+    const currentEntry = () =>
+      registered && getCurrentSubagentRunOwner(this.options.runs, registered);
+    const registryCurrent = () => {
       try {
         assertSubagentRegistryWriteSourceCurrent(context);
-        return true;
+        return isAgentEventLifecycleGenerationCurrent(lifecycleGeneration);
       } catch {
         return false;
       }
     };
-    if (registerParams.queued) {
-      options.retainOwnership?.(
-        Object.freeze({
-          waitForClaim: () => queuedScope?.waitForClaim(),
-          waitForRetirementPublication: () => queuedScope?.waitForRetirementPublication(),
-          canLaunch: () => queuedScope?.canLaunch() ?? false,
-          canAcceptLaunch: () => queuedScope?.canAcceptLaunch() ?? false,
-          canCleanupSession: () => queuedScope?.canCleanupSession() ?? canCleanupRefusedIntent(),
-          canRetireReservation: () =>
-            queuedScope?.canRetireReservation() ?? canCleanupRefusedIntent(),
-          settleFailedLaunch: async (error: string) => {
-            if (queuedScope) {
-              return queuedScope.settleFailedLaunch(error);
-            }
-            if (initialOutcome === "uncertain") {
-              throw initialFailure;
-            }
-            if (initialOutcome === "pending") {
-              throw new SubagentRegistryMutationRejectedError(
-                "Queued registration has not settled",
-              );
-            }
-          },
-        }),
+    const ownsSession = () => {
+      const observed = registered ?? plannedEntry;
+      return (
+        preparedRows !== undefined &&
+        !registrationOwnership.superseded &&
+        (!selected || observed !== undefined) &&
+        (!this.options.runs.has(runId) ||
+          (observed !== undefined &&
+            isSameSubagentRunOwner(this.options.runs.get(runId), observed))) &&
+        !Array.from(this.options.getRunsForChildSession(childSessionKey, childAgentId)).some(
+          (candidate) =>
+            !observed ||
+            (!isSameSubagentRunOwner(candidate, observed) &&
+              compareSubagentRunGeneration(candidate, observed) > 0),
+        )
       );
-    }
+    };
+    const ownsCleanupSession = () =>
+      preparedRows !== undefined &&
+      ![...preparedRows.values(), ...this.options.getChildSessionCandidates(childSessionKey)].some(
+        (candidate) =>
+          candidate.runId !== registered?.runId &&
+          isSubagentRunGenerationCandidate(candidate, childSessionKey, childAgentId),
+      );
+    const canCleanupRefusedIntent = () =>
+      initialOutcome === "refused" &&
+      ownsCleanupSession() &&
+      !selected &&
+      !this.options.runs.has(runId) &&
+      registryCurrent();
+    const activate = () => {
+      this.options.ensureListener();
+      this.options.startSweeper();
+    };
     try {
+      const queuedRegistration = registerParams.queued;
+      const settleFailedLaunch = async (error: string) => {
+        if (queuedRegistration && queuedScope) {
+          return queuedScope.settleFailedLaunch(error);
+        }
+        if (initialOutcome === "uncertain") {
+          throw initialFailure;
+        }
+        if (queuedRegistration && initialOutcome === "pending") {
+          throw new SubagentRegistryMutationRejectedError("Queued registration has not settled");
+        }
+      };
+      options.retainOwnership?.(
+        queuedRegistration
+          ? Object.freeze({
+              waitForClaim: () => queuedScope?.waitForClaim(),
+              waitForRetirementPublication: () => queuedScope?.waitForRetirementPublication(),
+              canLaunch: () => queuedScope?.canLaunch() ?? false,
+              canAcceptLaunch: () => queuedScope?.canAcceptLaunch() ?? false,
+              canAbortAcceptedRun: () => queuedScope?.canAbortAcceptedRun() ?? false,
+              canCleanupSession: () =>
+                ownsCleanupSession() &&
+                (queuedScope?.canCleanupSession() ?? canCleanupRefusedIntent()),
+              canRetireReservation: () =>
+                queuedScope?.canRetireReservation() ?? canCleanupRefusedIntent(),
+              settleFailedLaunch,
+            })
+          : Object.freeze({
+              waitForClaim: () => undefined,
+              waitForRetirementPublication: () =>
+                registered && waitForSubagentRetirementPublication(registered),
+              canLaunch: () =>
+                activated && registryCurrent() && Boolean(currentEntry()) && ownsSession(),
+              canAcceptLaunch: () =>
+                registered !== undefined &&
+                !subagentRuns.isCompletionAuthorityRetired(registered) &&
+                registryCurrent() &&
+                Boolean(currentEntry()) &&
+                ownsSession(),
+              canAbortAcceptedRun: () => registryCurrent() && ownsSession(),
+              canCleanupSession: () =>
+                registrationSettled &&
+                initialOutcome !== "uncertain" &&
+                registryCurrent() &&
+                ownsCleanupSession() &&
+                ownsSession() &&
+                !currentEntry(),
+              canRetireReservation: () =>
+                Boolean(
+                  registered &&
+                  ownsSwarmRunReservation(
+                    registered.schedulerSlotId ?? runId,
+                    getSubagentRunRuntimeKey(registered),
+                  ),
+                ),
+              settleFailedLaunch,
+            }),
+      );
       authority = registerParams.collect
         ? undefined
         : await captureOperatorToolGatewayContinuationContext();
-      const runIds = new Set([
-        runId,
-        ...Array.from(
-          this.options.getRunsForChildSession(childSessionKey, childAgentId),
-          (row) => row.runId,
-        ),
-      ]);
       const assertCurrent = () => {
         options.assertCurrent?.();
         authority?.assertCurrent();
@@ -198,11 +267,38 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
           );
         }
       };
+      assertCurrent();
+      preparedRows = await prepareSubagentRegistrationRows(
+        childSessionKey,
+        [
+          runId,
+          ...Array.from(
+            this.options.getChildSessionCandidates(childSessionKey),
+            (row) => row.runId,
+          ),
+        ],
+        context,
+      );
+      selected ??= preparedRows.get(runId);
+      assertCurrent();
+      const isGenerationCandidate = (row: SubagentRunRecord) =>
+        isSubagentRunGenerationCandidate(row, childSessionKey, childAgentId);
+      const runIds = new Set([
+        runId,
+        ...[...preparedRows.values(), ...this.options.getChildSessionCandidates(childSessionKey)]
+          .filter(isGenerationCandidate)
+          .map((row) => row.runId),
+      ]);
       const result = await mutateSubagentRuns(
         [...runIds],
         (rows) => {
           assertCurrent();
           const previous = rows.get(runId);
+          if (previous && resolveSubagentChildAgentId(previous) !== childAgentId) {
+            throw new SubagentRegistryMutationRejectedError(
+              "Subagent registration cannot replace an unresolved or different child owner.",
+            );
+          }
           if (previous && options.acceptedRunReplay === true) {
             if (
               previous.childSessionKey !== childSessionKey ||
@@ -225,14 +321,17 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
               "Subagent registration owner changed during preparation",
             );
           }
-          const siblings = [...this.options.getRunsForChildSession(childSessionKey, childAgentId)];
-          if (siblings.some((row) => !runIds.has(row.runId))) {
+          const candidates = [...this.options.getChildSessionCandidates(childSessionKey)].filter(
+            isGenerationCandidate,
+          );
+          if (candidates.some((row) => !runIds.has(row.runId))) {
             throw new SubagentRegistryMutationRejectedError("Subagent registration cohort changed");
           }
           const entry = createSubagentRegistrationRecord(registerParams, {
             now: Date.now(),
-            generation: nextSubagentRunGeneration(siblings, childSessionKey, childAgentId),
+            generation: nextSubagentRunGeneration(rows.values(), childSessionKey, childAgentId),
             lifecycleGeneration,
+            childAgentId,
             requesterAgentId,
             requesterOrigin: normalizeDeliveryContext(registerParams.requesterOrigin),
             swarmWaitOwnerSessionKeys:
@@ -259,20 +358,25 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
               },
               cfg,
             );
-          entry.childAgentId = previous
-            ? previous.childAgentId
-            : keyAgentId
-              ? undefined
-              : explicitChildAgentId?.value;
           if (registerParams.queued) {
             entry.queuedLaunch = undefined;
           }
           const postimages = this.planSupersededKillReconciliations(rows, entry);
           postimages.set(runId, entry);
-          return { value: entry, postimages };
+          plannedEntry = entry;
+          return {
+            value: entry,
+            postimages,
+            registrationCohort: {
+              childSessionKey,
+              childAgentId,
+              runIds: [...rows.values()].filter(isGenerationCandidate).map((row) => row.runId),
+            },
+          };
         },
         {
           runs: this.options.runs,
+          preparedRows,
           context,
           assertCurrent,
           onPublished: (postimages, planned) => {
@@ -282,13 +386,23 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
             }
             registered = entry;
             try {
+              options.assertPublicationCurrent?.();
+              bindSubagentExecRequestOwners(entry, readExecRequestOwners(options), {
+                controllerSessionKey,
+                controllerAgentId: resolveAgentIdFromSessionKey(
+                  controllerSessionKey,
+                  requesterAgentId,
+                ),
+              });
               if (authority?.operatorAuthority) {
                 subagentRuns.bindCompletionAuthority(entry, authority);
                 custodyTransferred = true;
               }
             } finally {
-              bindGatewayContextResolver(entry, registerParams.gatewayContextResolver);
-              subagentRuns.commitOwnership(entry);
+              bindGatewayContextResolver(entry, gatewayContextResolver);
+              if (!registrationOwnership.superseded) {
+                registrationOwnership.accept(entry);
+              }
               bindSwarmRunReservation(
                 entry.schedulerSlotId ?? runId,
                 getSubagentRunRuntimeKey(entry),
@@ -310,14 +424,16 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       if (!result) {
         return;
       }
-      const activate = () => {
-        this.options.ensureListener();
-        this.options.startSweeper();
-      };
+      const published = currentEntry();
+      if (!published) {
+        throw new SubagentRegistryMutationRejectedError(
+          "Subagent registration lost its acknowledged run owner",
+        );
+      }
       if (registerParams.queued) {
         await registerRequiredQueuedSubagent({
           context,
-          entry: registered ?? result,
+          entry: published,
           queuedLaunch: registerParams.queuedLaunch,
           manager: this.options,
           activate,
@@ -327,18 +443,54 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
           },
         });
       } else {
+        assertSubagentRegistryWriteSourceCurrent(context);
+        options.assertCurrent?.();
+        options.assertPublicationCurrent?.();
+        authority?.assertCurrent();
+        authority?.signal.throwIfAborted();
+        const current = currentEntry();
+        if (
+          !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) ||
+          !current ||
+          !ownsSession() ||
+          current.killIntent ||
+          current.killReconciliation ||
+          getGatewayContextResolver(current) !== gatewayContextResolver ||
+          (gatewayContextResolver &&
+            (!gatewayContext || gatewayContextResolver() !== gatewayContext))
+        ) {
+          throw new SubagentRegistryMutationRejectedError(
+            "Subagent registration lost its original run owner",
+          );
+        }
         activate();
+        activated = true;
         void this.waitForSubagentCompletion(
           runId,
+          current,
           this.options.resolveSubagentWaitTimeoutMs(cfg, registerParams.runTimeoutSeconds ?? 0),
-          result,
         );
       }
     } catch (error) {
+      if (error instanceof SubagentRegistryVersionConflictError) {
+        preparedRows = undefined;
+      }
       if (!queuedScope) {
         initialOutcome =
-          hasSqliteWorkerOutcomeUnknown(error) || registered ? "uncertain" : "refused";
+          hasSqliteWorkerOutcomeUnknown(error) ||
+          (error instanceof SubagentRegistryWriteError &&
+            error.outcome === "committed" &&
+            !registered)
+            ? "uncertain"
+            : "refused";
         initialFailure = error;
+      }
+      if (!registerParams.queued && registered && !activated) {
+        subagentRuns.retireCompletionAuthority(registered);
+        if (registryCurrent() && currentEntry()) {
+          // A committed child still needs terminal observation after its caller retires.
+          activate();
+        }
       }
       if (
         registered &&
@@ -349,6 +501,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       }
       throw error;
     } finally {
+      registrationSettled = true;
       if (!custodyTransferred) {
         authority?.release();
       }
@@ -463,68 +616,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       return false;
     }
     if (!started.terminalBeforeAcceptance) {
-      void this.waitForSubagentCompletion(
-        nextRunId,
-        this.options.resolveSubagentWaitTimeoutMs(
-          this.options.getRuntimeConfig(),
-          started.entry.runTimeoutSeconds,
-        ),
-        started.entry,
-      );
+      void this.waitForSubagentCompletion(nextRunId, started.entry);
     }
     return true;
-  };
-
-  readonly failQueuedSubagentRun = async (runId: string, error: string): Promise<boolean> => {
-    const selected = this.findRunByIdentity(runId.trim());
-    if (!selected) {
-      return false;
-    }
-    const context = captureOpenClawStateWorkerContext();
-    const prepared = await prepareSwarmCollectorCompletion(
-      selected,
-      this.options.getRuntimeConfig(),
-      () => assertSubagentRegistryWriteSourceCurrent(context),
-    );
-    return mutateSubagentRuns(
-      [selected.runId],
-      (rows) => {
-        const current = rows.get(selected.runId);
-        if (
-          !current ||
-          !isSameSubagentRunOwner(current, selected) ||
-          current.execution.status !== "queued" ||
-          current.killIntent ||
-          current.killReconciliation
-        ) {
-          return { value: false };
-        }
-        const entry = structuredClone(current);
-        const endedAt = Date.now();
-        entry.endedReason = SUBAGENT_ENDED_REASON_ERROR;
-        entry.execution = {
-          ...entry.execution,
-          status: "terminal",
-          endedAt,
-          outcome: { status: "error", error, endedAt },
-        };
-        entry.queuedLaunch = undefined;
-        entry.collectorLaunchCleanupPending = true;
-        entry.completion = { required: false, resultText: error, capturedAt: endedAt };
-        updateSwarmCollectorCompletion(entry, this.options.getRuntimeConfig(), prepared);
-        return { value: true, postimages: new Map([[entry.runId, entry]]) };
-      },
-      {
-        runs: this.options.runs,
-        context,
-        onPublished: (postimages) => {
-          const published = postimages.get(selected.runId);
-          if (published) {
-            clearPublishedSwarmCollectorOutput(published);
-          }
-        },
-      },
-    );
   };
 
   readonly settleFailedQueuedSubagentLaunch = async (
@@ -535,9 +629,8 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     if (!selected?.collect) {
       return false;
     }
-    if (typeof selected.execution.endedAt !== "number") {
-      return this.failQueuedSubagentRun(runId, error);
-    }
+    // Usage preparation can outlive completion; retain the phase selected for this attempt.
+    const wasQueued = typeof selected.execution.endedAt !== "number";
     const context = captureOpenClawStateWorkerContext();
     const prepared = await prepareSwarmCollectorCompletion(
       selected,
@@ -548,26 +641,33 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       [selected.runId],
       (rows) => {
         const current = rows.get(selected.runId);
-        if (
-          !current ||
-          !isSameSubagentRunOwner(current, selected) ||
-          !current.collect ||
-          current.killIntent ||
-          typeof current.execution.endedAt !== "number"
-        ) {
+        if (!current || !isSameSubagentRunOwner(current, selected) || current.killIntent) {
           return { value: false };
         }
-        if (current.collectorCompletion) {
-          return { value: true };
+        let entry: SubagentRunRecord;
+        if (wasQueued) {
+          if (current.execution.status !== "queued" || current.killReconciliation) {
+            return { value: false };
+          }
+          entry = createFailedQueuedRun(current, error);
+          updateSwarmCollectorCompletion(entry, this.options.getRuntimeConfig(), prepared);
+        } else {
+          const endedAt = current.execution.endedAt;
+          if (!current.collect || typeof endedAt !== "number") {
+            return { value: false };
+          }
+          if (current.collectorCompletion) {
+            return { value: true };
+          }
+          entry = structuredClone(current);
+          prepareTerminatedCollectorLaunch(
+            entry,
+            endedAt,
+            error,
+            () => this.options.getRuntimeConfig(),
+            prepared,
+          );
         }
-        const entry = structuredClone(current);
-        prepareTerminatedCollectorLaunch(
-          entry,
-          current.execution.endedAt,
-          error,
-          () => this.options.getRuntimeConfig(),
-          prepared,
-        );
         return { value: true, postimages: new Map([[entry.runId, entry]]) };
       },
       {

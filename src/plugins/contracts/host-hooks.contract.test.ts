@@ -30,7 +30,7 @@ import {
 } from "../../gateway/operator-scopes.js";
 import { pluginHostHookHandlers } from "../../gateway/server-methods/plugin-host-hooks.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
-import { buildGatewaySessionRow } from "../../gateway/session-utils.js";
+import { buildGatewaySessionRow } from "../../gateway/session-utils-row.js";
 import { withTempConfig } from "../../gateway/test-temp-config.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -50,7 +50,7 @@ import { listPluginSessionSchedulerJobs } from "../host-hook-runtime.test-fixtur
 import {
   drainPluginNextTurnInjectionContext,
   enqueuePluginNextTurnInjection,
-  getPluginSessionExtensionStateSync,
+  getPluginSessionExtensionState,
   patchPluginSessionExtension,
   projectPluginSessionExtensionsSync,
 } from "../host-hook-state.js";
@@ -189,7 +189,7 @@ const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-host-hooks-scope
 async function withHostHookState(
   run: (fixture: HostHookStateFixture) => Promise<void>,
   createTempConfig: (storePath: string) => HostHookStateFixture["tempConfig"] = (storePath) => ({
-    agents: { entries: { main: { default: true } } },
+    agents: { entries: { main: {} } },
     session: { store: storePath },
   }),
 ): Promise<void> {
@@ -1531,7 +1531,7 @@ describe("host-hook fixture plugin contract", () => {
           }),
         ).resolves.toMatchObject({ ok: true });
         expect(
-          getPluginSessionExtensionStateSync({
+          await getPluginSessionExtensionState({
             cfg: tempConfig,
             agentId: "qa",
             sessionKey: "global",

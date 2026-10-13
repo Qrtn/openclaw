@@ -1,5 +1,14 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
+import { createMessageReceiptFromOutboundResults } from "../../../channels/message/receipt.js";
+import type { ChannelPlugin } from "../../../channels/plugins/types.public.js";
 import * as config from "../../../config/config.js";
+import {
+  appendTranscriptMessage,
+  loadSessionEntry,
+  upsertSessionEntryCore,
+} from "../../../config/sessions/session-accessor.js";
 import { resolvePhysicalSessionStorePath } from "../../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { callGateway } from "../../../gateway/call.js";
@@ -10,6 +19,8 @@ import {
 } from "../../../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
 import { onAgentEvent, rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import { sqliteWorkerOwnerProbe as probe } from "../../../infra/sqlite-worker-owner-probe.test-support.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../../../plugins/runtime.js";
 import {
   getGatewayContextLifetime,
   getGatewayContextResolver,
@@ -18,20 +29,35 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
+import {
+  createChannelTestPluginBase,
+  createTestRegistry,
+} from "../../../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import { setSubagentAnnounceDeliveryDepsForTest } from "../announce/subagent-announce-overrides.test-support.js";
+import * as announce from "../announce/subagent-announce.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
+import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
+import {
+  loadSubagentRegistryFromSqlite,
+  saveSubagentRegistryChangesToSqlite,
+} from "./subagent-registry-state.fixture.test-support.js";
+import { observeRootWork } from "./subagent-registry.browser-cleanup.test-support.js";
 import {
   adoptSubagentRunForRequesterTurn,
   registerSubagentRun,
   replaceSubagentRunAfterSteerCore,
 } from "./subagent-registry.js";
-import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
+import { settleSubagentRegistryPersistenceWork } from "./subagent-registry.persistence.test-support.js";
+import { registerSubagentRegistrationOwnershipTests } from "./subagent-registry.registration-ownership.test-support.js";
+import { registerRequesterCompletionCustodyTests } from "./subagent-registry.requester-completion.test-support.js";
 import {
   releaseSubagentRun,
   resetSubagentRegistryForTests,
 } from "./subagent-registry.test-helpers.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentRegistrationScope, SubagentRunRecord } from "./subagent-registry.types.js";
 
 vi.mock("../../../config/config.js", { spy: true });
 vi.mock("../../../gateway/call.js", { spy: true });
@@ -40,10 +66,7 @@ vi.mock("../../../infra/agent-events.js", { spy: true });
 
 async function updateRun(runId: string, update: (draft: SubagentRunRecord) => void): Promise<void> {
   await mutateSubagentRuns([runId], (rows) => {
-    const current = rows.get(runId);
-    if (!current) {
-      throw new Error("Completion authority fixture run missing");
-    }
+    const current = expectDefined(rows.get(runId), "completion authority fixture run");
     const draft = structuredClone(current);
     update(draft);
     return { value: undefined, postimages: new Map([[runId, draft]]) };
@@ -78,9 +101,12 @@ function registration(
   runId: string,
   overrides: Partial<Parameters<typeof registerSubagentRun>[0]> = {},
 ): Parameters<typeof registerSubagentRun>[0] {
+  config.setRuntimeConfigSnapshot(config.getRuntimeConfig());
   return {
     runId,
     childSessionKey: `agent:main:subagent:${runId}`,
+    childAgentId: "main",
+    sessionEntry: { sessionId: `original-${runId}` },
     requesterSessionKey: "agent:main:main",
     requesterDisplayKey: "main",
     task: "result",
@@ -101,38 +127,109 @@ afterEach(async () => {
   vi.mocked(callGateway).mockReset();
   vi.mocked(bindGatewayLifecycleRequest).mockReset();
   vi.mocked(onAgentEvent).mockReset();
+  vi.mocked(config.getRuntimeConfig).mockReset();
 });
 
 describe("registered completion source custody", () => {
-  it.each([false, true])(
-    "publishes accepted-run registration only after a current worker commit (caller revoked: %s)",
-    async (revoke) => {
+  registerSubagentRegistrationOwnershipTests({ registration, updateRun });
+
+  it("keeps same-key child registrations owned by different agents separate", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      config.setRuntimeConfigSnapshot({});
+      const first = registration("research-global", {
+        childSessionKey: "global",
+        childAgentId: "research",
+      });
+      await registerSubagentRun(first);
+      const original = loadSubagentRegistryFromSqlite().get(first.runId);
+      await registerSubagentRun(
+        registration("main-global", { childSessionKey: "global", childAgentId: "main" }),
+      );
+      await expect(
+        registerSubagentRun({ ...first, childAgentId: "main" }, { acceptedRunReplay: true }),
+      ).rejects.toThrow("unresolved or different child owner");
+      const persisted = loadSubagentRegistryFromSqlite();
+      expect(persisted.get(first.runId)).toEqual(original);
+      expect(persisted.get("main-global")?.childAgentId).toBe("main");
+    });
+  });
+
+  it.each([
+    "current",
+    "before commit",
+    "publication after commit",
+    "caller after ownership publication",
+    "gateway after ownership publication",
+  ] as const)(
+    "publishes accepted-run registration with current authority at each boundary (%s)",
+    async (transition) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const cfg = { session: { store: state.path("sessions.json") } };
+        config.setRuntimeConfigSnapshot(cfg);
         vi.mocked(config.getRuntimeConfig).mockReturnValue(cfg);
         const runId = "worker-registration";
         const entered = createDeferredCore();
         const release = createDeferredCore();
+        let current = true;
+        let observedOwnershipPublication = false;
+        let registrationScope: SubagentRegistrationScope | undefined;
+        const gatewayBinding = { current: createContext() };
+        const resolveGatewayContext = () => gatewayBinding.current;
+        const stopObserving = subscribeSubagentRunChanges("projection", ({ runIds }) => {
+          if (
+            (transition === "caller after ownership publication" ||
+              transition === "gateway after ownership publication") &&
+            runIds?.includes(runId) &&
+            subagentRuns.has(runId)
+          ) {
+            observedOwnershipPublication = true;
+            if (transition === "gateway after ownership publication") {
+              gatewayBinding.current = createContext();
+            } else {
+              current = false;
+            }
+          }
+        });
         const execute = stateWorker.runOpenClawStateWorkerOperation;
         const held = vi
           .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
           .mockImplementationOnce(async (owner, run, options) => {
             entered.resolve();
             await release.promise;
-            return execute(owner, run, options);
+            return execute(
+              owner,
+              async (scope) => {
+                const result = await run(scope);
+                if (transition === "publication after commit") {
+                  current = false;
+                }
+                return result;
+              },
+              options,
+            );
           });
-        let current = true;
         let pending: Promise<void> | undefined;
         try {
           pending = Promise.resolve(
-            registerSubagentRun(registration(runId), {
-              acceptedRunReplay: true,
-              assertCurrent: () => {
-                if (!current) {
-                  throw new Error("requester retired before registry commit");
-                }
+            registerSubagentRun(
+              registration(runId, { gatewayContextResolver: resolveGatewayContext }),
+              {
+                acceptedRunReplay: true,
+                assertCurrent: () => {
+                  if (!current) {
+                    throw new Error("requester retired before registry commit");
+                  }
+                },
+                assertPublicationCurrent: () => {
+                  if (!current) {
+                    throw new Error("requester retired after registry commit");
+                  }
+                },
+                retainOwnership: (scope) => {
+                  registrationScope = scope;
+                },
               },
-            }),
+            ),
           );
           await Promise.race([
             entered.promise,
@@ -142,12 +239,35 @@ describe("registered completion source custody", () => {
           ]);
           expect(subagentRuns.has(runId)).toBe(false);
           expect(callGateway).not.toHaveBeenCalled();
-          current = !revoke;
+          current = transition !== "before commit";
           release.resolve();
-          if (revoke) {
+          if (transition === "before commit") {
             await expect(pending).rejects.toThrow("requester retired before registry commit");
             expect(subagentRuns.has(runId)).toBe(false);
             expect(callGateway).not.toHaveBeenCalled();
+          } else if (transition !== "current") {
+            if (transition === "publication after commit") {
+              await expect(pending).rejects.toMatchObject({
+                outcome: "committed",
+                publication: "published",
+              });
+            } else if (transition === "gateway after ownership publication") {
+              await expect(pending).rejects.toThrow("lost its original run owner");
+              expect(observedOwnershipPublication).toBe(true);
+            } else {
+              await expect(pending).rejects.toThrow("requester retired before registry commit");
+              expect(observedOwnershipPublication).toBe(true);
+            }
+            const entry = subagentRuns.get(runId);
+            expect(entry).toMatchObject({ execution: { status: "running" } });
+            expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
+              execution: { status: "running" },
+            });
+            expect(registrationScope?.canLaunch()).toBe(false);
+            expect(registrationScope?.canCleanupSession()).toBe(false);
+            expect(registrationScope?.canAbortAcceptedRun()).toBe(true);
+            expect(callGateway).not.toHaveBeenCalled();
+            expect(onAgentEvent).toHaveBeenCalledOnce();
           } else {
             await pending;
             expect(subagentRuns.get(runId)).toMatchObject({
@@ -161,7 +281,7 @@ describe("registered completion source custody", () => {
               }),
             );
             const accepted = subagentRuns.get(runId);
-            expect(accepted?.childAgentId).toBeUndefined();
+            expect(accepted?.childAgentId).toBe("main");
             await registerSubagentRun(registration(runId, { childAgentId: "MAIN" }), {
               acceptedRunReplay: true,
             });
@@ -170,12 +290,13 @@ describe("registered completion source custody", () => {
               registerSubagentRun(registration(runId, { childAgentId: "research" }), {
                 acceptedRunReplay: true,
               }),
-            ).rejects.toThrow("Subagent registration child agent disagrees with its session key.");
+            ).rejects.toThrow("explicit valid child agent");
             expect(callGateway).toHaveBeenCalledTimes(1);
           }
         } finally {
           release.resolve();
           await pending?.catch(() => {});
+          stopObserving();
           held.mockRestore();
         }
       });
@@ -184,6 +305,7 @@ describe("registered completion source custody", () => {
 
   it("keeps a committed registration restricted when its operator source expires before ACK", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      config.setRuntimeConfigSnapshot({});
       const context = createContext();
       const resolveGatewayContext = () => context;
       context.resolveGatewayContext = resolveGatewayContext;
@@ -212,26 +334,14 @@ describe("registered completion source custody", () => {
       );
       const entered = createDeferredCore();
       const release = createDeferredCore();
-      const execute = stateWorker.runOpenClawStateWorkerOperation;
-      const held = vi
-        .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-        .mockImplementation((owner, run, options) =>
-          execute(
-            owner,
-            (scope) =>
-              run({
-                execute: async (command, executeOptions) => {
-                  const receipt = await scope.execute(command, executeOptions);
-                  if (command.type === "subagents.persistChanges") {
-                    entered.resolve();
-                    await release.promise;
-                  }
-                  return receipt;
-                },
-              }),
-            options,
-          ),
-        );
+      const held = probe.command(stateWorker, async (command, executeOptions, scope) => {
+        const receipt = await scope.execute(command, executeOptions);
+        if (command.type === "subagents.persistChanges") {
+          entered.resolve();
+          await release.promise;
+        }
+        return receipt;
+      });
       const pending = withPluginRuntimeGatewayRequestScope(
         { client, context, resolveGatewayContext, isWebchatConnect: () => false },
         () => registerSubagentRun(params),
@@ -262,9 +372,11 @@ describe("registered completion source custody", () => {
         expect(competingRegistration.assertCurrent).toThrow();
         expect(source.authority.assertCurrent).toThrow();
         const ambient = vi.fn();
-        expect(() => subagentRuns.runWithCompletionAuthority(entry, ambient)).toThrow(/authority/);
+        expect(() => subagentRuns.runWithCompletionAuthority(entry, ambient)).toThrow(
+          "Subagent completion requester store was retired",
+        );
         expect(() => subagentRuns.runWithCompletionBatchAuthority([entry], ambient)).toThrow(
-          /authority/,
+          "Subagent completion requester store was retired",
         );
         expect(ambient).not.toHaveBeenCalled();
         expect(callGateway).not.toHaveBeenCalled();
@@ -275,7 +387,7 @@ describe("registered completion source custody", () => {
         const current = subagentRuns.get(entry.runId)!;
         expect(current).not.toBe(entry);
         expect(() => subagentRuns.runWithCompletionAuthority(current, ambient)).toThrow(
-          /authority/,
+          "Subagent completion requester store was retired",
         );
         expect(getGatewayContextResolver(current)).toBe(resolveGatewayContext);
         expect(ambient).not.toHaveBeenCalled();
@@ -289,25 +401,242 @@ describe("registered completion source custody", () => {
     });
   });
 
-  it("retains raw child ownership, including unknown legacy ownership, on registration replay", async () => {
+  it.for(["current", "revoked"] as const)(
+    "rechecks %s registered completion authority at the final outbound adapter",
+    async (authority, { signal }) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const cfg = { session: { store: state.path("sessions.json") } };
+        config.setRuntimeConfigSnapshot(cfg);
+        vi.mocked(config.getRuntimeConfig).mockReturnValue(cfg);
+        const requesterSessionKey = "agent:main:discord:dm:registered-completion";
+        const childSessionKey = "agent:main:subagent:registered-final-delivery";
+        const runId = "registered-final-delivery";
+        const content = "Acknowledged child result";
+        for (const [sessionKey, sessionId] of [
+          [requesterSessionKey, "completion-requester"],
+          [childSessionKey, "completion-child"],
+        ] as const) {
+          await upsertSessionEntryCore(
+            { storePath: cfg.session.store, sessionKey, agentId: "main" },
+            { sessionId, updatedAt: Date.now() },
+          );
+        }
+        const context = createContext();
+        context.getRuntimeConfig = () => cfg;
+        context.resolveGatewayContext = () => context;
+        const client = createOperatorClient({
+          profileName: "registered-final-delivery",
+          scopes: ["operator.write"],
+        });
+        const revoked = new AbortController();
+        client.internal = {
+          operatorAccessAuthority: {
+            signal: revoked.signal,
+            assertCurrent: () => revoked.signal.throwIfAborted(),
+          },
+        };
+        const terminal = createDeferredCore<unknown>();
+        const beforeSend = createDeferredCore();
+        const releaseSend = createDeferredCore();
+        const flowCompleted = createDeferredCore<announce.SubagentAnnounceFlowOutcome>();
+        let announcement: ReturnType<typeof announce.runSubagentAnnounceFlow> | undefined;
+        const actualAnnounce = announce.runSubagentAnnounceFlow;
+        const announceSpy = vi
+          .spyOn(announce, "runSubagentAnnounceFlow")
+          .mockImplementation((params) => {
+            announcement = actualAnnounce(params);
+            void announcement.then(flowCompleted.resolve, flowCompleted.reject);
+            return announcement;
+          });
+        const received: string[] = [];
+        const sendText = vi.fn(async ({ text }: { text: string }) => {
+          received.push(text);
+          return {
+            messageId: "registered-completion-result",
+            receipt: createMessageReceiptFromOutboundResults({
+              results: [{ channel: "discord", messageId: "registered-completion-result" }],
+              kind: "text",
+            }),
+          };
+        });
+        const channel = {
+          ...createChannelTestPluginBase({ id: "discord" }),
+          message: {
+            id: "discord",
+            send: {
+              lifecycle: {
+                beforeSendAttempt: async () => {
+                  beforeSend.resolve();
+                  await releaseSend.promise;
+                },
+              },
+              text: sendText,
+            },
+          },
+        } satisfies ChannelPlugin;
+        const previousRegistry = getActivePluginRegistry();
+        setActivePluginRegistry(
+          createTestRegistry([{ pluginId: "discord", source: "test", plugin: channel }]),
+        );
+        setSubagentAnnounceDeliveryDepsForTest({
+          dispatchGatewayMethodInProcess: vi.fn().mockResolvedValue({
+            status: "ok",
+            result: { payloads: [{ text: content }], meta: { durationMs: 1 } },
+          }),
+        });
+        vi.mocked(callGateway).mockReturnValue(terminal.promise);
+        const settleRoots = observeRootWork();
+        const failures: unknown[] = [];
+        try {
+          await withPluginRuntimeGatewayRequestScope(
+            {
+              client,
+              context,
+              resolveGatewayContext: () => context,
+              isWebchatConnect: () => false,
+            },
+            () =>
+              registerSubagentRun(
+                registration(runId, {
+                  childSessionKey,
+                  sessionEntry: { sessionId: "completion-child" },
+                  requesterSessionKey,
+                  requesterAgentId: "main",
+                  requesterOrigin: { channel: "discord", to: "dm:registered-completion" },
+                  gatewayContextResolver: () => context,
+                }),
+              ),
+          );
+          const entry = expectDefined(subagentRuns.get(runId), "acknowledged registration");
+          expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
+            childSessionKey,
+            execution: { status: "running" },
+          });
+          await appendTranscriptMessage(
+            {
+              storePath: cfg.session.store,
+              sessionKey: childSessionKey,
+              sessionId: "completion-child",
+              agentId: "main",
+            },
+            {
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: content }],
+                stopReason: "stop",
+                __openclaw: { runId },
+              },
+            },
+          );
+          terminal.resolve({
+            status: "ok",
+            startedAt: entry.createdAt,
+            endedAt: Date.now(),
+            terminalReply: { disposition: "visible", text: content },
+          });
+          await withinTest(
+            awaitGateBeforeSettlement(
+              beforeSend.promise,
+              flowCompleted.promise,
+              "Registered completion did not reach its final outbound adapter",
+            ),
+            signal,
+          );
+          expect(received).toEqual([]);
+          expect(subagentRuns.get(runId)?.execution.status).toBe("terminal");
+          if (authority === "revoked") {
+            revoked.abort(new Error("registered completion operator revoked"));
+          }
+          releaseSend.resolve();
+          await withinTest(flowCompleted.promise, signal);
+          await settleSubagentRegistryPersistenceWork(() => settleRoots(true));
+          const stored = expectDefined(
+            loadSubagentRegistryFromSqlite().get(runId),
+            "retained result",
+          );
+          if (authority === "current") {
+            expect(received).toEqual([content]);
+            expect(sendText).toHaveBeenCalledOnce();
+            expect(stored.delivery?.status).toBe("delivered");
+          } else {
+            expect(received).toEqual([]);
+            expect(sendText).not.toHaveBeenCalled();
+            expect(stored.delivery?.status).not.toBe("delivered");
+          }
+          expect(
+            loadSessionEntry({ storePath: cfg.session.store, sessionKey: childSessionKey }),
+          ).toMatchObject({ sessionId: "completion-child" });
+        } catch (error) {
+          failures.push(error);
+        } finally {
+          terminal.resolve({ status: "pending" });
+          releaseSend.resolve();
+          const settled = await Promise.allSettled([announcement]);
+          failures.push(
+            ...settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+          );
+          try {
+            await settleSubagentRegistryPersistenceWork(() => settleRoots());
+          } catch (error) {
+            failures.push(error);
+          }
+          await resetSubagentRegistryForTests({ persist: false });
+          announceSpy.mockRestore();
+          setSubagentAnnounceDeliveryDepsForTest();
+          setActivePluginRegistry(previousRegistry ?? createTestRegistry());
+        }
+        if (failures.length > 0) {
+          throw new AggregateError(failures, "Registered completion delivery proof failed");
+        }
+      });
+    },
+  );
+
+  registerRequesterCompletionCustodyTests({ registration, updateRun });
+
+  it("retains raw child ownership across store changes and refuses unresolved historical replay", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const originalConfig = { session: { store: state.path("original.sqlite") } };
       for (const childAgentId of [undefined, "research"]) {
+        config.setRuntimeConfigSnapshot(originalConfig);
         vi.mocked(config.getRuntimeConfig).mockReturnValue(originalConfig);
         const runId = childAgentId ?? "legacy";
-        const params = registration(runId, { childSessionKey: "global", childAgentId });
-        await registerSubagentRun(params);
-        expect(subagentRuns.get(runId)?.childAgentId).toBe(childAgentId);
-        vi.mocked(config.getRuntimeConfig).mockReturnValue({
-          session: { store: state.path("replacement.sqlite") },
+        const params = registration(runId, {
+          childSessionKey: "global",
+          childAgentId: childAgentId ?? "main",
         });
-        await registerSubagentRun(
-          { ...params, childAgentId: "main" },
-          {
-            acceptedRunReplay: true,
-          },
-        );
-        expect(subagentRuns.get(runId)?.childAgentId).toBe(childAgentId);
+        if (childAgentId === undefined) {
+          const historical = createSubagentRunRecord({
+            runId,
+            childSessionKey: "global",
+            requesterAgentId: "main",
+            requesterStorePath: resolvePhysicalSessionStorePath(
+              { sessionKey: params.requesterSessionKey, agentId: "main" },
+              originalConfig,
+            ),
+          });
+          saveSubagentRegistryChangesToSqlite(new Map([[runId, historical]]), [runId]);
+        } else {
+          await registerSubagentRun(params);
+        }
+        const original = loadSubagentRegistryFromSqlite().get(runId);
+        expect(original?.childAgentId).toBe(childAgentId);
+        const replacementConfig = {
+          session: { store: state.path("replacement.sqlite") },
+        };
+        config.setRuntimeConfigSnapshot(replacementConfig);
+        vi.mocked(config.getRuntimeConfig).mockReturnValue(replacementConfig);
+        if (childAgentId === undefined) {
+          await expect(registerSubagentRun(params, { acceptedRunReplay: true })).rejects.toThrow(
+            "unresolved or different child owner",
+          );
+          expect(subagentRuns.has(runId)).toBe(false);
+        } else {
+          const accepted = subagentRuns.get(runId);
+          await registerSubagentRun(params, { acceptedRunReplay: true });
+          expect(subagentRuns.get(runId)).toBe(accepted);
+        }
+        expect(loadSubagentRegistryFromSqlite().get(runId)).toEqual(original);
       }
     });
   });
@@ -326,6 +655,7 @@ describe("registered completion source custody", () => {
     async (changed) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         let cfg: OpenClawConfig = { session: { store: state.path("original.sqlite") } };
+        config.setRuntimeConfigSnapshot(cfg);
         const context = createContext();
         context.getRuntimeConfig = () => cfg;
         context.resolveGatewayContext = () => context;
@@ -419,6 +749,7 @@ describe("registered completion source custody", () => {
             }
           } else if (changed === "store") {
             cfg = { session: { store: state.path("replacement.sqlite") } };
+            config.setRuntimeConfigSnapshot(cfg);
             expect(
               resolvePhysicalSessionStorePath(
                 { sessionKey: requesterSessionKey, agentId: "main" },
@@ -435,7 +766,7 @@ describe("registered completion source custody", () => {
             await pending;
             expect(subagentRuns.get(runId)?.requesterStorePath).toBe(originalPath);
             expect(subagentRuns.get(runId)?.controllerStorePath).toBe(originalPath);
-            expect(subagentRuns.get(runId)?.childAgentId).toBeUndefined();
+            expect(subagentRuns.get(runId)?.childAgentId).toBe("main");
             await releaseSubagentRun(runId);
           } else {
             await expect(pending).rejects.toThrow(
@@ -460,8 +791,6 @@ describe("registered completion source custody", () => {
     "revoke",
     "gateway-close",
     "replace",
-    "completed-followup-original-revoked",
-    "completed-followup-successor-revoked",
     "release-rejected",
     "registration-rejected",
     "cancelled-by-another-operator",
@@ -470,6 +799,7 @@ describe("registered completion source custody", () => {
     "stale-batch-member",
   ] as const)("outlives execution and closes on %s", async (ending) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      config.setRuntimeConfigSnapshot({});
       const context = createContext();
       const resolveGatewayContext = () => context;
       context.resolveGatewayContext = resolveGatewayContext;
@@ -622,87 +952,6 @@ describe("registered completion source custody", () => {
             /authority/,
           );
           await releaseSubagentRun("successor");
-        } else if (
-          ending === "completed-followup-original-revoked" ||
-          ending === "completed-followup-successor-revoked"
-        ) {
-          await updateRun(entry.runId, (draft) => {
-            draft.execution = { status: "terminal", endedAt: 1, outcome: { status: "ok" } };
-            draft.delivery = { status: "pending" };
-          });
-          const successorClient = createOperatorClient({
-            profileName: "followup-owner",
-            scopes: ["operator.write"],
-          });
-          const successorRevoked = new AbortController();
-          const successorSource = (await operatorCapture.captureGatewayOperatorRunAuthority({
-            client: successorClient,
-            context,
-            sourceAuthority: {
-              signal: successorRevoked.signal,
-              assertCurrent: () => successorRevoked.signal.throwIfAborted(),
-            },
-          }))!;
-          successorClient.internal = { operatorRunAuthority: successorSource.authority };
-          try {
-            expect(
-              await withPluginRuntimeGatewayRequestScope(
-                {
-                  client: successorClient,
-                  context,
-                  resolveGatewayContext,
-                  isWebchatConnect: () => false,
-                },
-                () =>
-                  replaceSubagentRunAfterSteerCore({
-                    previousRunId: entry.runId,
-                    nextRunId: "successor",
-                    expected: subagentRuns.get(entry.runId),
-                    allowEndedSource: true,
-                    preserveCompletedRun: true,
-                    task: "second turn",
-                  }),
-              ),
-            ).toBe(true);
-            successorSource.release();
-            const retained = subagentRuns.get(entry.runId)!;
-            const successor = subagentRuns.get("successor")!;
-            const stored = loadSubagentRegistryFromSqlite();
-            expect(stored.get(entry.runId)).toMatchObject({
-              execution: { status: "terminal", suppressSessionEffects: true },
-              delivery: { status: "pending" },
-              requesterTurnRunId: "parent",
-            });
-            expect(stored.get(successor.runId)).toMatchObject({
-              taskRunId: successor.runId,
-              task: "second turn",
-              execution: { status: "running" },
-            });
-            expect(successor.requesterTurnRunId).toBeUndefined();
-            expect(successor.requesterTurnYielded).toBeUndefined();
-            const completionSource = (run: SubagentRunRecord) =>
-              subagentRuns.runWithCompletionAuthority(
-                run,
-                () =>
-                  getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority
-                    ?.source,
-              );
-            // Suppressing old session effects must not retire its pending result's custody.
-            expect(completionSource(retained)).toBe(source.authority.source);
-            expect(completionSource(successor)).toBe(successorSource.authority.source);
-            const revokeOriginal = ending === "completed-followup-original-revoked";
-            (revokeOriginal ? revoked : successorRevoked).abort(new Error("operator revoked"));
-            expect(() => completionSource(revokeOriginal ? retained : successor)).toThrow(
-              /authority/,
-            );
-            expect(completionSource(revokeOriginal ? successor : retained)).toBe(
-              revokeOriginal ? successorSource.authority.source : source.authority.source,
-            );
-            await releaseSubagentRun(entry.runId);
-            await releaseSubagentRun(successor.runId);
-          } finally {
-            successorSource.release();
-          }
         } else if (ending === "release-rejected") {
           rejectNextRegistryWrite("write refused");
           await expect(releaseSubagentRun(entry.runId)).rejects.toThrow("write refused");

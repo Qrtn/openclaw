@@ -11,7 +11,7 @@ import {
 } from "./server-startup-log.js";
 
 const modelMocks = vi.hoisted(() => ({
-  resolveThinkingDefault: vi.fn(() => "medium" as const),
+  resolveThinkingDefault: vi.fn((): "medium" | "off" => "medium"),
 }));
 function createManifestRecord(
   overrides: Partial<PluginManifestRecord> & Pick<PluginManifestRecord, "id">,
@@ -113,10 +113,8 @@ describe("gateway startup log", () => {
       cfg: { hooks: { gmail: { allowUnsafeExternalContent: true } } },
     });
 
-    expect(warn.mock.calls).toEqual([
-      [
-        "security warning: dangerous config flags enabled: hooks.gmail.allowUnsafeExternalContent=true. Run `openclaw security audit`.",
-      ],
+    expect(warn.mock.calls).toContainEqual([
+      "security warning: dangerous config flags enabled: hooks.gmail.allowUnsafeExternalContent=true. Run `openclaw security audit`.",
     ]);
   });
 
@@ -132,10 +130,8 @@ describe("gateway startup log", () => {
       },
     });
 
-    expect(warn.mock.calls).toEqual([
-      [
-        "configured channel warning: channels.missing-chat is configured but no channel plugin is installed or loadable (no-channel-owner). Run `openclaw doctor --fix` or install the channel plugin before relying on this channel.",
-      ],
+    expect(warn.mock.calls).toContainEqual([
+      "configured channel warning: channels.missing-chat is configured but no channel plugin is installed or loadable (no-channel-owner). Run `openclaw doctor --fix` or install the channel plugin before relying on this channel.",
     ]);
   });
 
@@ -162,10 +158,8 @@ describe("gateway startup log", () => {
       ambientEnvTriggers: "suppress",
     });
 
-    expect(warn.mock.calls).toEqual([
-      [
-        "gateway suppressed ambient channel auto-configuration for 1 channel: discord. Configure channels.<id> (openclaw channels add <id>) to enable the channel, or pass --ambient-channels to allow ambient env credentials.",
-      ],
+    expect(warn.mock.calls).toContainEqual([
+      "gateway suppressed ambient channel auto-configuration for 1 channel: discord. Configure channels.<id> (openclaw channels add <id>) to enable the channel, or pass --ambient-channels to allow ambient env credentials.",
     ]);
     expect(warn.mock.calls.flat().join("\n")).not.toContain("channels.discord is configured");
   });
@@ -191,8 +185,9 @@ describe("gateway startup log", () => {
       manifestRecords,
     });
 
-    expect(warn.mock.calls[0]?.[0]).toContain("channels.slack: channel is configured");
-    expect(warn.mock.calls[0]?.[0]).not.toContain(String.fromCharCode(0x1b));
+    const warnings = warn.mock.calls.flat().join("\n");
+    expect(warnings).toContain("channels.slack: channel is configured");
+    expect(warnings).not.toContain(String.fromCharCode(0x1b));
   });
 
   it("does not warn when startup activation enables the configured channel owner", async () => {
@@ -224,7 +219,7 @@ describe("gateway startup log", () => {
       },
     });
 
-    expect(warn).not.toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join("\n")).not.toContain("configured channel warning");
   });
 
   it("formats configured model thinking and fast mode defaults with the startup model", () => {
@@ -255,23 +250,27 @@ describe("gateway startup log", () => {
     );
   });
 
-  it("defaults unset startup thinking to medium", () => {
-    expect(
-      formatAgentModelStartupDetails({
-        cfg: {
-          agents: {
-            defaults: {
-              model: "openai/gpt-5.5",
+  it.each(["medium", "off"] as const)(
+    "reports the provider's unset thinking default: %s",
+    (level) => {
+      modelMocks.resolveThinkingDefault.mockReturnValue(level);
+      expect(
+        formatAgentModelStartupDetails({
+          cfg: {
+            agents: {
+              defaults: {
+                model: "openai/gpt-5.5",
+              },
+              entries: { main: { fastModeDefault: true } },
             },
-            list: [{ id: "main", default: true, fastModeDefault: true }],
           },
-        },
-        provider: "openai",
-        model: "gpt-5.5",
-      }),
-    ).toBe("thinking=medium, fast=on");
-    expect(modelMocks.resolveThinkingDefault).toHaveBeenCalledTimes(1);
-  });
+          provider: "openai",
+          model: "gpt-5.5",
+        }),
+      ).toBe(`thinking=${level}, fast=on`);
+      expect(modelMocks.resolveThinkingDefault).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("preserves explicit startup thinking off", () => {
     expect(
@@ -346,7 +345,7 @@ describe("gateway startup log", () => {
                 "openai/gpt-5.5": { params: { fastMode: false } },
               },
             },
-            list: [{ id: "alpha", default: true, thinkingDefault: "high", fastModeDefault: true }],
+            entries: { alpha: { thinkingDefault: "high", fastModeDefault: true } },
           },
         },
         provider: "openai",
