@@ -9443,7 +9443,6 @@
 ["src/process/scoped-child-reaper.test.ts","../infra/windows-install-roots.js","919f22cf20f7673db760634bdc3d3eae326b00d69ccafc6730ba3ca6a294f92a",1]
 ["src/process/scoped-child-reaper.test.ts","../shared/pid-alive.js","a79b71e2896e6c9000c025b9bc154200117c27b94f027afa7bd685d0c5ebe7fb",1]
 ["src/process/scoped-child-reaper.test.ts","./child-process-tree.js","63bf3d381afc2308f9cd7457d60067a8198a246ac61de35d7d448fc6cd40ca4e",1]
-["src/process/scoped-child-reaper.test.ts","./exec-spawn.js","458fcd6d2785a36bc86882052f65aff827b583f0809567b1f8aaec3948c9ee1c",1]
 ["src/process/scoped-child-reaper.test.ts","./kill-tree.js","0523a8d2032b81e47405327541b5c158a70632fa15d73e06542412531fecb501",1]
 ["src/process/spawn-broker/host-native-lifetime.test.ts","../../infra/runtime-worker-url.js","58cf4a6cde8ba8cb3c64dbab9b7944cc2abb6a424a353b0ca24f6738c465e77c",1]
 ["src/process/spawn-broker/host-native-lifetime.test.ts","./cleanup.js","fca937d17bb0de04c52566a871915f8500f7cc199ffb851e9f3d41957f75140d",1]
