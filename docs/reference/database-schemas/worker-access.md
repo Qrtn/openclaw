@@ -420,6 +420,11 @@ worker snapshot; discovery still reads only metadata. Its transcript statistics
 batch carries the rewrite generation and hot/cold state alongside the bounds,
 so the subsequent scan reuses those facts without another watermark read. A
 rewrite during a background scan converges on the next receipt-driven refresh.
+Usage reports capture cache metadata, bodies, and selected monthly partitions in
+one synchronous engine read snapshot, then close it before asynchronous transcript
+discovery, replay, or pricing. Concurrent refreshes cannot change those captured
+inputs; subsequent reports see the newer cache. Canonical replay retains its
+checkpoint-bounded transcript reads and anchor comparison.
 Participant writers likewise reuse their committed projection-change decision:
 counter-only contributions skip the display-projection read, preserve committed
 display facts, and invalidate exact aggregate records. These changes do not alter stored
@@ -4829,10 +4834,17 @@ incarnation, and revision before installing them; unknown outcomes use its
 existing asynchronous refill. Identity notifications retain the same prepared
 facts, and repeated registration of an unchanged physical store preserves the
 resident inventory. Missing databases are prepared by the same worker owner.
-Incognito replacements use the memory actor. Already executing workers, Doctor
-maintenance, and prepared native deletion rollback closures retain their
-synchronous kernels.
+Incognito replacements use the memory actor. Already executing workers and explicit
+Doctor maintenance retain their synchronous kernels.
 Schemas, retained bytes, configuration, and update behavior are unchanged.
+
+Entry-cache revisions reuse the existing local mutation and sibling write receipts,
+plus admitted schema facts. They install no TEMP triggers or JavaScript SQL functions.
+Local rollback invalidates abandoned snapshots; unrelated local writes conservatively
+expire cached metadata. Entry writers record conversation, node, snapshot, and window
+writes together before publishing the resulting cache revision. Transcript appends
+publish unchanged metadata across their known transcript-only writes; metadata
+mutations and extension callbacks remain outside that receipt.
 
 Writer-held target discovery uses a separate, single-worker read lane under the
 existing session database lifecycle owner. Target reads and their awaited native
