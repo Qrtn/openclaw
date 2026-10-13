@@ -72,6 +72,7 @@ export const CANONICAL_COERCION_HELPER_OWNERS = [
       "normalizeCsvOrLooseStringList",
       "normalizeHyphenSlug",
       "normalizeOptionalTrimmedStringList",
+      "normalizeSessionKeyForComparison",
       "normalizeSingleOrTrimmedStringList",
       "normalizeSortedUniqueStringEntries",
       "normalizeSortedUniqueTrimmedStringList",
