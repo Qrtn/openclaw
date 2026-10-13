@@ -71,7 +71,14 @@ import {
   setTestPluginRegistry,
 } from "./test-helpers.js";
 
-type Case = "allowed" | "guest" | "delegation-revoked" | "revoked";
+type Case =
+  | "allowed"
+  | "guest"
+  | "delegation-revoked"
+  | "revoked"
+  | "author-revoked"
+  | "owner-retired";
+type AllowlistSnapshot = { allowFrom: string[]; assertCurrent: () => void };
 type Post = {
   id: string;
   author_id: string;
@@ -183,6 +190,16 @@ const { xPlugin } = await importBundledChannelContractSourceArtifact<{
 const { setXRuntime } = await importBundledChannelContractSourceArtifact<{
   setXRuntime: (runtime: PluginRuntime) => void;
 }>("x", "runtime-api.js", {});
+const { openXAllowlist } = await importBundledChannelContractSourceArtifact<{
+  openXAllowlist: (runtime: PluginRuntime) => {
+    put: (
+      accountId: string,
+      entry: { userId: string; username: string; name: string; addedBy: string; addedAt: number },
+    ) => Promise<void>;
+    remove: (accountId: string, userId: string) => Promise<unknown>;
+    readSnapshot: (accountId: string) => Promise<AllowlistSnapshot>;
+  };
+}>("x", "test-api.js", {});
 
 function post(id: string, root: string, author: string, text: string): Post {
   return {
@@ -197,7 +214,7 @@ function post(id: string, root: string, author: string, text: string): Post {
 describe("X publication production-owner composition", () => {
   installGatewayTestHooks();
 
-  it("commits and anonymously reads maintainer work; denies guest and revoked creation", async ({
+  it("renews stale X authority for public creation and rejects revocation before commit", async ({
     signal,
   }) => {
     const channels: OpenClawConfig["channels"] = {
@@ -208,7 +225,7 @@ describe("X publication production-owner composition", () => {
         clientSecret: "synthetic-client-secret",
         refreshToken: "synthetic-refresh-token",
         bearerToken: appToken,
-        allowFrom: ["x:10"],
+        allowFrom: [],
         groupPolicy: "allowlist",
         autoPublishWorkSessions: true,
         guests: { enabled: true },
@@ -311,6 +328,15 @@ describe("X publication production-owner composition", () => {
     setTestPluginRegistry(builder.registry);
     const instance = expectDefined(getPluginInstance(record), "registered X instance");
     instance.run(() => setXRuntime(api.runtime));
+    const allowlist = openXAllowlist(api.runtime);
+    const allowlistEntry = (userId: string) => ({
+      userId,
+      username: userId === "10" ? "maintainer" : "unrelated",
+      name: "Synthetic X author",
+      addedBy: "composition-proof",
+      addedAt: 0,
+    });
+    await allowlist.put("default", allowlistEntry("10"));
     const registeredX = expectDefined(
       builder.registry.channels.find((entry) => entry.pluginId === "x"),
       "registered X channel",
@@ -323,8 +349,12 @@ describe("X publication production-owner composition", () => {
 
     let activeCase: Case = "allowed";
     let creating = false;
+    let creationSettled = Promise.withResolvers<void>();
     let revokedInCatalogWait = false;
     let delegationRevokedInCatalogWait = false;
+    let authorRevokedInCatalogWait = false;
+    let ownerRetiredInCatalogWait = false;
+    const staleSnapshots = new Map<Case, AllowlistSnapshot>();
     const creationRequests: Array<{ kind: Case; parent: unknown }> = [];
     const catalog = gateway.loadGatewayModelCatalogSnapshot;
     gateway.loadGatewayModelCatalogSnapshot = async (request) => {
@@ -342,6 +372,17 @@ describe("X publication production-owner composition", () => {
         const next = structuredClone(cfg());
         next.agents!.entries!.main!.subagents!.delegateToolsTo = [];
         setRuntimeConfigSnapshot(next);
+      }
+      if (creating && activeCase === "author-revoked" && !authorRevokedInCatalogWait) {
+        authorRevokedInCatalogWait = true;
+        await allowlist.remove("default", "10");
+        expect((await allowlist.readSnapshot("default")).allowFrom).not.toContain("10");
+      }
+      if (creating && activeCase === "owner-retired" && !ownerRetiredInCatalogWait) {
+        ownerRetiredInCatalogWait = true;
+        // Retire the real registry/ingress owner, not a fabricated publication guard.
+        // This is the final case: its runtime must never be revived for another turn.
+        markPluginRegistryRetired(builder.registry);
       }
       return snapshot;
     };
@@ -363,6 +404,7 @@ describe("X publication production-owner composition", () => {
                 )(options);
               } finally {
                 creating = false;
+                creationSettled.resolve();
               }
             },
           },
@@ -406,6 +448,11 @@ describe("X publication production-owner composition", () => {
           const publication = readChildSessionPublication(admitted.operationalRunInstance);
           publications.set(activeCase, publication !== undefined);
           publication?.assertCurrent();
+          const staleSnapshot = staleSnapshots.get(activeCase);
+          if (staleSnapshot) {
+            expect(() => staleSnapshot.assertCurrent()).toThrow("X allowlist changed");
+            expect(publication).toBeDefined();
+          }
           const caller = expectDefined(
             createAdmittedGatewayToolCallerIdentity({
               admittedRunContext: admitted,
@@ -569,6 +616,19 @@ describe("X publication production-owner composition", () => {
     channel.inbound.dispatch = async (...args) => {
       console.info("[x-proof] real dispatch entered", activeCase);
       try {
+        if (
+          activeCase === "allowed" ||
+          activeCase === "author-revoked" ||
+          activeCase === "owner-retired"
+        ) {
+          // The monitor has already captured publication intent and built its
+          // host-bound context. Mutate real SQLite policy before run admission.
+          const snapshot = await allowlist.readSnapshot("default");
+          expect(snapshot.allowFrom).toContain("10");
+          await allowlist.put("default", allowlistEntry("40"));
+          expect(() => snapshot.assertCurrent()).toThrow("X allowlist changed");
+          staleSnapshots.set(activeCase, snapshot);
+        }
         const result = await originalDispatch(...args);
         dispatched.resolve();
         return result;
@@ -580,9 +640,17 @@ describe("X publication production-owner composition", () => {
     const rows = () => listSessionEntriesCore({ agentId: "coder", storePath: childStore });
     try {
       for (const [index, kind] of (
-        ["allowed", "guest", "delegation-revoked", "revoked"] as const
+        [
+          "allowed",
+          "guest",
+          "delegation-revoked",
+          "revoked",
+          "author-revoked",
+          "owner-retired",
+        ] as const
       ).entries()) {
-        if (kind === "delegation-revoked" || kind === "revoked") {
+        if (kind !== "allowed" && kind !== "guest") {
+          await allowlist.put("default", allowlistEntry("10"));
           const restored = structuredClone(cfg());
           restored.agents!.entries!.main!.subagents!.delegateToolsTo = ["coder"];
           // The public grant deliberately retires on any config change. Use a
@@ -591,6 +659,7 @@ describe("X publication production-owner composition", () => {
           setRuntimeConfigSnapshot(restored);
         }
         activeCase = kind;
+        creationSettled = Promise.withResolvers<void>();
         dispatched = Promise.withResolvers<void>();
         rejectMonitor = dispatched.reject;
         rejectIngress = dispatched.reject;
@@ -629,25 +698,50 @@ describe("X publication production-owner composition", () => {
           }),
         );
         try {
+          const dispatch =
+            kind === "owner-retired"
+              ? dispatched.promise
+              : awaitGateBeforeSettlement(
+                  dispatched.promise,
+                  monitor,
+                  "X monitor ended before production reply dispatch",
+                );
           await withinTest(
-            awaitGateBeforeSettlement(
-              dispatched.promise,
-              monitor,
-              "X monitor ended before production reply dispatch",
-            ),
+            dispatch.catch((error: unknown) => {
+              // These transitions also forbid the final X reply. The source/
+              // delivery owner may reject dispatch instead of emitting a reply.
+              if (kind === "author-revoked") {
+                expect(authorRevokedInCatalogWait).toBe(true);
+              } else if (kind === "owner-retired") {
+                expect(ownerRetiredInCatalogWait).toBe(true);
+              } else {
+                throw error;
+              }
+            }),
             signal,
           );
+          if (kind !== "guest") {
+            await withinTest(creationSettled.promise, signal);
+          }
         } finally {
           rejectMonitor = undefined;
           rejectIngress = undefined;
           abort.abort();
           try {
-            await monitor;
+            await monitor.catch((error: unknown) => {
+              if (kind !== "owner-retired" || !ownerRetiredInCatalogWait) {
+                throw error;
+              }
+              // Retirement can reject the monitor's last plugin-runtime callback.
+              expect(String(error)).toContain("reloaded or disabled");
+            });
           } finally {
             await scheduling.close();
           }
         }
-        expect(networkCase.replies).toHaveLength(1);
+        expect(networkCase.replies).toHaveLength(
+          kind === "author-revoked" || kind === "owner-retired" ? 0 : 1,
+        );
         const publicReads = networkCase.reads.filter((request) => request.appOnly);
         if (kind === "guest") {
           expect(publicReads).toEqual([]);
@@ -719,13 +813,27 @@ describe("X publication production-owner composition", () => {
               "X publication composition: durable child answer.",
             );
             expect(response.getBody()).not.toContain("openclaw-app");
-          } else {
+          } else if (kind === "revoked") {
             expect(revokedInCatalogWait).toBe(true);
             expect(outcomes.get(kind)).toMatchObject({
               error: expect.stringContaining("publication policy changed"),
             });
+          } else if (kind === "author-revoked") {
+            expect(staleSnapshots.has(kind)).toBe(true);
+            expect(authorRevokedInCatalogWait).toBe(true);
+            expect(outcomes.get(kind)).toMatchObject({
+              error: expect.stringContaining("X allowlist changed"),
+            });
+          } else {
+            expect(staleSnapshots.has(kind)).toBe(true);
+            expect(ownerRetiredInCatalogWait).toBe(true);
+            expect(outcomes.get(kind)).toMatchObject({
+              error: expect.stringContaining("Public ingress owner is no longer current"),
+            });
           }
         }
+        // No rejected request may leave even a private/orphaned child row.
+        expect(rows()).toHaveLength(1);
         expect(rows().filter(({ entry }) => resolveSessionPublicShare(entry))).toHaveLength(1);
         expect(
           rows().filter(({ entry }) => entry.parentSessionKey === "agent:main:x:group:" + rootId),
