@@ -58,12 +58,6 @@ declare module "@solidjs/web" {
         "prop:run": UpdateRunRecord | null;
         "prop:connected": boolean;
       };
-      "openclaw-plugin-contributions": HTMLAttributes<HTMLElement> & {
-        "prop:kind": "header" | "composer";
-        "prop:sessionKey": string;
-        "prop:agentId": string | undefined;
-        "prop:presented": boolean;
-      };
       "openclaw-plugin-view": HTMLAttributes<HTMLElement> &
         PluginViewProperties & {
           "prop:defaultView": unknown;
@@ -145,7 +139,16 @@ declare module "@solidjs/web" {
         ElementProperties<
           Pick<
             HTMLElementTagNameMap["openclaw-viewer-facepile"],
-            "staticParticipants" | "totalCount" | "maxVisible" | "personActivity"
+            | "staticParticipants"
+            | "staticUsers"
+            | "presencePayload"
+            | "selfUser"
+            | "selfInstanceId"
+            | "sessionKey"
+            | "excludeIdentities"
+            | "totalCount"
+            | "maxVisible"
+            | "personActivity"
           >
         > & { variant?: "session" };
       "openclaw-viewer-avatar": HTMLAttributes<HTMLElementTagNameMap["openclaw-viewer-avatar"]> &
