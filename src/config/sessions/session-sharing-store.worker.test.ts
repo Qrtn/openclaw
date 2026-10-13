@@ -35,6 +35,7 @@ import {
 import * as agentWorkers from "../../state/openclaw-agent-worker-store.js";
 import { emitUserProfilesChanged } from "../../state/user-profile-events.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { captureRuntimeConfigAsyncReader } from "../io.runtime.js";
 import {
   loadSessionEntry,
   patchSessionEntryCore,
@@ -60,6 +61,7 @@ import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-ru
 
 it("lists current membership evidence while transcript reads wait", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    await captureRuntimeConfigAsyncReader()();
     const scope = { agentId: "main", sessionKey: "agent:main:worker-members" };
     const entry = { sessionId: "worker-members", updatedAt: 1 };
     await patchSessionEntryCore(scope, () => entry, {
@@ -216,6 +218,7 @@ it.each(["session.members.list", "session.members.listEvidence"] as const)(
   "%s reads full member rows off the Gateway thread, including cached statements",
   async (method) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await captureRuntimeConfigAsyncReader()();
       const scope = { agentId: "main", sessionKey: "agent:main:worker-members" };
       await upsertSessionEntryCore(scope, { sessionId: "worker-members", updatedAt: 1 });
       await addSessionMember(scope, { identityId: "zoe", addedBy: "owner", addedAt: 2 });
@@ -252,6 +255,7 @@ it.each(["session.members.list", "session.members.listEvidence"] as const)(
 
 it("rechecks the current manager after the membership read yields", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    await captureRuntimeConfigAsyncReader()();
     const scope = { agentId: "main", sessionKey: "agent:main:member-reader-authority" };
     await upsertSessionEntryCore(scope, {
       sessionId: "member-reader-authority",
@@ -353,7 +357,12 @@ it("commits aliased worker membership and participant facts before publishing, a
           promptedAt: 4,
         }),
       ).toBe("updated");
-      expect(changes).toHaveLength(publications);
+      expect(changes).toHaveLength(publications + 1);
+      expect(changes.at(-1)).toMatchObject({
+        sessionKey: scope.sessionKey,
+        facts: { kind: "participants" },
+      });
+      expect(changes.at(-1)).not.toHaveProperty("facts.projection");
       expect(participantLifecycle).toHaveBeenCalledTimes(2);
       await expect(
         addSessionMember(scope, {
@@ -394,68 +403,58 @@ it("commits aliased worker membership and participant facts before publishing, a
   });
 });
 
-it("rejects the complete aliased category update when a later member changes after preparation", async () => {
+it("preserves entry changes and skips reassigned categories after preparation", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const database = openOpenClawAgentDatabase({ agentId: "main" });
     const alias = state.path("category-alias");
     fs.symlinkSync(path.dirname(database.path), alias, "junction");
-    const scopeAt = (index: number) => ({
+    const scope = {
       agentId: "main",
       storePath: path.join(alias, path.basename(database.path)),
-      sessionKey: `agent:main:category-revalidation:${String(index).padStart(2, "0")}`,
-    });
-    const firstScope = scopeAt(0);
-    const replacedScope = scopeAt(11);
-    const scopes = [
-      firstScope,
-      ...Array.from({ length: 10 }, (_, index) => scopeAt(index + 1)),
-      replacedScope,
-    ];
-    for (const [index, scope] of scopes.entries()) {
-      replaceSessionEntrySync(scope, {
-        sessionId: `original-${index}`,
+      sessionKey: "agent:main:category-current",
+    };
+    const reassigned = { ...scope, sessionKey: "agent:main:category-reassigned" };
+    for (const target of [scope, reassigned]) {
+      replaceSessionEntrySync(target, {
+        sessionId: target.sessionKey,
         updatedAt: 1,
         category: "Work",
+        label: "Before",
       });
     }
     let changed = false;
     await expect(
       updateSessionGroupCategoriesInWorker({
-        scope: firstScope,
+        scope,
         from: "Work",
         assertTargetCurrent() {
           if (!changed) {
             changed = true;
-            replaceSessionEntrySync(replacedScope, {
-              sessionId: "replacement",
+            replaceSessionEntrySync(scope, {
+              sessionId: scope.sessionKey,
               updatedAt: 2,
+              category: "Work",
+              label: "After",
+            });
+            replaceSessionEntrySync(reassigned, {
+              sessionId: reassigned.sessionKey,
+              updatedAt: 3,
               category: "Replacement",
+              label: "Reassigned",
             });
           }
         },
       }),
-    ).rejects.toThrow(
-      `SQLite session entry changed before replacement for ${replacedScope.sessionKey}`,
-    );
-    expect(loadSessionEntry(firstScope)).toMatchObject({
-      sessionId: "original-0",
-      updatedAt: 1,
-      category: "Work",
-    });
-    expect(loadSessionEntry(replacedScope)).toMatchObject({
-      sessionId: "replacement",
-      updatedAt: 2,
+    ).resolves.toBe(1);
+    const entry = loadSessionEntry(scope);
+    expect(entry).toMatchObject({ sessionId: scope.sessionKey, updatedAt: 2, label: "After" });
+    expect(entry?.category).toBeUndefined();
+    expect(loadSessionEntry(reassigned)).toMatchObject({
+      sessionId: reassigned.sessionKey,
+      updatedAt: 3,
       category: "Replacement",
+      label: "Reassigned",
     });
-    await expect(
-      updateSessionGroupCategoriesInWorker({ scope: firstScope, from: "Work" }),
-    ).resolves.toBe(11);
-    for (const [index, scope] of scopes.slice(0, -1).entries()) {
-      const entry = loadSessionEntry(scope);
-      expect(entry).toMatchObject({ sessionId: `original-${index}`, updatedAt: 1 });
-      expect(entry?.category).toBeUndefined();
-    }
-    expect(loadSessionEntry(replacedScope)?.category).toBe("Replacement");
   });
 });
 
@@ -468,6 +467,7 @@ it.each([
   "settles committed $mutation with $receipt receipt when the ordinary worker reply is lost",
   async ({ mutation, receipt }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      await captureRuntimeConfigAsyncReader()();
       const scope = {
         agentId: "main",
         sessionKey: "agent:main:lost-member-reply",

@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { buildCliSessionDriftNote } from "../agents/cli-session.js";
-import { captureTranscriptRedactionSnapshot } from "../agents/transcript-redact-text.js";
 import {
   appendTranscriptMessage,
   replaceSessionEntry,
@@ -97,7 +96,6 @@ it("serves a captured history prefix while both transcripts append and observes 
         sessionAgentId: scope.agentId,
         canonicalKey: scope.sessionKey,
         cliHistoryHomeDir: homeDir,
-        cliHistoryRedaction: captureTranscriptRedactionSnapshot(),
         max: 4,
         maxHistoryBytes: 64 * 1024,
         effectiveMaxChars: 4096,
@@ -205,7 +203,6 @@ it("applies native history eligibility to actual empty, message, and marker-only
                 sessionAgentId: scope.agentId,
                 canonicalKey: scope.sessionKey,
                 cliHistoryHomeDir: homeDir,
-                cliHistoryRedaction: captureTranscriptRedactionSnapshot(),
                 max: 10,
                 maxHistoryBytes: 64 * 1024,
                 effectiveMaxChars: 4096,
@@ -284,7 +281,6 @@ it("observes newly available reset archives and refuses changed archive bodies u
         sessionAgentId: scope.agentId,
         canonicalKey: scope.sessionKey,
         cliHistoryHomeDir: homeDir,
-        cliHistoryRedaction: captureTranscriptRedactionSnapshot(),
         max: 10,
         maxHistoryBytes: 64 * 1024,
         effectiveMaxChars: 4096,
@@ -381,7 +377,15 @@ it("observes newly available reset archives and refuses changed archive bodies u
   });
 });
 
-it("matches native rows on their original text and cleans only unmatched imports", async () => {
+it.each([
+  "resume",
+  "legacy hint",
+  "legacy context",
+  "legacy resume",
+  "legacy hint CRLF",
+  "legacy context CRLF",
+])("matches original native text and cleans unmatched imports with %s", async (decoration) => {
+  const kind = decoration.replace(" CRLF", "");
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     await withClaudeProjectsDir(async ({ homeDir, sessionId: nativeId, filePath }) => {
       const scope = {
@@ -396,7 +400,24 @@ it("matches native rows on their original text and cleans only unmatched imports
         cliSessionBindings: { "claude-cli": { sessionId: nativeId } },
       };
       const note = buildCliSessionDriftNote(["prompt-tools"]);
-      const literal = `${note}\n\nhello`;
+      const hint =
+        'requester_profile is the verified linked requester. For "assign to me", use sessions assign_owner with ownerType="human" and ownerId=requester_profile.id, if available.\n\n';
+      const context =
+        'Conversation info: ⟦openclaw:ctx⟧\n```json\n{"requester_profile":{"id":"owner","display_name":"Owner"}}\n```\n\n';
+      const prefix = (
+        kind === "resume"
+          ? `${note}\n\n`
+          : kind === "legacy hint"
+            ? hint
+            : kind === "legacy context"
+              ? context + hint
+              : `${note}\n\n${context}${hint}`
+      ).replaceAll("\n", decoration.endsWith("CRLF") ? "\r\n" : "\n");
+      const literal = `${prefix}hello`;
+      const plain =
+        kind === "legacy context"
+          ? context.replace("}}", '},"requester_profile_hint":"current"}') + "hello"
+          : "hello";
       const events = "System: [2026-10-04 13:15:44 GMT+8] Model switched.\n\n";
       const local = (id: string, parentId: string | null, content: string, timestamp: number) => ({
         type: "message",
@@ -407,9 +428,9 @@ it("matches native rows on their original text and cleans only unmatched imports
       await replaceSessionEntry(scope, entry);
       await replaceTranscriptEvents(scope, [
         { type: "session", version: 3, id: scope.sessionId },
-        local("literal", null, literal, 1_000),
-        local("plain", "literal", "hello", 2_000),
-        local("question", "plain", "real question", 3_000),
+        local("plain", null, plain, 1_000),
+        local("literal", "plain", literal, 2_000),
+        local("question", "literal", "real question", 3_000),
       ]);
       await waitForSessionTranscriptProjection(scope);
       const native = (uuid: string, content: string, timestamp: number) =>
@@ -423,9 +444,13 @@ it("matches native rows on their original text and cleans only unmatched imports
         filePath,
         [
           native("native-literal", literal, 1_001),
-          native("native-plain", "hello", 2_001),
-          native("native-question", `${note}\n\n${events}real question`, 3_001),
-          native("native-unmatched", `${note}\n\n${events}only in the native file`, 4_000),
+          native(
+            "native-plain",
+            kind === "legacy context" ? `${prefix}${events}hello` : "hello",
+            2_001,
+          ),
+          native("native-question", `${prefix}${events}real question`, 3_001),
+          native("native-unmatched", `${prefix}${events}only in the native file`, 4_000),
           native(
             "native-exec",
             `${events}${buildExecEventPrompt(["Exec completed (example, code 0) :: done"])}`,
@@ -451,7 +476,6 @@ it("matches native rows on their original text and cleans only unmatched imports
               sessionAgentId: scope.agentId,
               canonicalKey: scope.sessionKey,
               cliHistoryHomeDir: homeDir,
-              cliHistoryRedaction: captureTranscriptRedactionSnapshot(),
               max: 10,
               maxHistoryBytes: 64 * 1024,
               effectiveMaxChars: 4096,
@@ -469,8 +493,8 @@ it("matches native rows on their original text and cleans only unmatched imports
             });
             // Three canonical rows absorb their native copies; the literal note stays literal.
             expect(page.messages).toMatchObject([
-              { content: literal, __openclaw: { id: "literal" } },
-              { content: "hello", __openclaw: { id: "plain" } },
+              { content: plain, __openclaw: { id: "plain", externalId: "native-plain" } },
+              { content: literal, __openclaw: { id: "literal", externalId: "native-literal" } },
               { content: "real question", __openclaw: { id: "question" } },
               {
                 content: "only in the native file",

@@ -195,7 +195,13 @@ function Sprite(props: LobsterPetSceneProps & { twin: boolean }) {
         style={visual().style}
         aria-hidden="true"
         title={visual().title}
-        onPointerDown={(event) => props.onPointerDown(event)}
+        onPointerDown={(event) => {
+          // Keep the composer focused before the context menu captures its return target.
+          if (event.button === 2) {
+            event.preventDefault();
+          }
+          props.onPointerDown(event);
+        }}
         onPointerUp={(event) => props.onPointerUp(event)}
         onPointerCancel={() => props.onPointerCancel()}
         onPointerLeave={() => props.onPointerCancel()}
@@ -341,7 +347,6 @@ function Scene(args: LobsterPetSceneProps) {
     };
   });
   // dynamic owns tracking of the selected factory and retains a crossing's nodes.
-  // eslint-disable-next-line solid/reactivity
   const Passer = dynamic(() => view().passerSprite);
   return (
     <Show when={args.scene.top}>

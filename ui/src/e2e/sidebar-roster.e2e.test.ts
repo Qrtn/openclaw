@@ -16,6 +16,7 @@ import {
 } from "../test-helpers/control-ui-e2e.ts";
 import { cronListResponseFixture } from "../test-helpers/cron.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import { waitForMobileSidebarDrawerOpen } from "./session-management.test-support.ts";
 import { captureSidebarUiProof } from "./sidebar-customization.test-support.ts";
 import {
   chooseSidebarOwner,
@@ -118,8 +119,8 @@ suite.define(() => {
         await page.addInitScript(
           ({ key, entries }) => {
             const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
-            if (!Array.isArray(stored.sidebarEntries)) {
-              localStorage.setItem(key, JSON.stringify({ ...stored, sidebarEntries: entries }));
+            if (!Array.isArray(stored.railShortcuts)) {
+              localStorage.setItem(key, JSON.stringify({ ...stored, railShortcuts: entries }));
             }
           },
           {
@@ -189,6 +190,17 @@ suite.define(() => {
 
         const headers = sidebar.locator(".sidebar-agent-roster__row");
         await expect.poll(() => headers.count()).toBe(4);
+        expect(await sidebar.locator(".sidebar-agent-roster__menu wa-dropdown-item").count()).toBe(
+          0,
+        );
+        expect(await sidebar.locator(".sidebar-new-session-menu wa-dropdown-item").count()).toBe(0);
+        const rosterMenu = sidebar.locator('[data-agent-group="main"] .sidebar-agent-roster__menu');
+        await rosterMenu.getByRole("button", { name: "Options for Harbor", exact: true }).focus();
+        await page.keyboard.press("Enter");
+        await rosterMenu.locator('wa-dropdown-item[value="main"]').waitFor({ state: "visible" });
+        expect(await rosterMenu.locator("wa-dropdown-item").count()).toBe(3);
+        await page.keyboard.press("Escape");
+        expect(await rosterMenu.locator("wa-dropdown-item").count()).toBe(3);
         await expect
           .poll(() =>
             headers.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-agent-id"))),
@@ -197,10 +209,10 @@ suite.define(() => {
         await expect.poll(() => sessionRows.count()).toBe(8);
         expect(await sidebar.locator(".sidebar-footer-bar__home").count()).toBe(1);
         await expectWorkspace();
-        expect(await sidebar.locator(".sidebar-session-toolbar").count()).toBe(0);
-        expect(await sidebar.locator(".sidebar-brand__actions .sidebar-session-sort").count()).toBe(
-          1,
-        );
+        expect(await sidebar.locator(".sidebar-session-toolbar").count()).toBe(1);
+        expect(
+          await sidebar.locator(".sidebar-session-toolbar .sidebar-session-sort").count(),
+        ).toBe(1);
         for (const agent of agentsList.agents) {
           const group = sidebar.locator(`[data-agent-group="${agent.id}"]`);
           const pin = sidebar.locator(
@@ -320,9 +332,12 @@ suite.define(() => {
         await expect.poll(() => workspaceMenu.count()).toBe(0);
         await expectFocused(workspace);
 
-        await sidebar.locator(".sidebar-brand__new-thread").click();
-        const newMenu = sidebar.locator(".sidebar-brand .sidebar-new-session-menu");
+        await sidebar.locator(".sidebar-session-toolbar .sidebar-new-session").click();
+        const newMenu = sidebar.locator(".sidebar-new-session-menu");
         await expect.poll(() => newMenu.locator("wa-dropdown-item").first().isVisible()).toBe(true);
+        await page.keyboard.press("Escape");
+        expect(await newMenu.locator("wa-dropdown-item").count()).toBe(4);
+        await sidebar.locator(".sidebar-session-toolbar .sidebar-new-session").click();
         expect(
           await newMenu
             .locator("wa-dropdown-item a")
@@ -471,11 +486,15 @@ suite.define(() => {
         await expectFocused(activeAgentTile);
         await page.keyboard.press("Escape");
         await expect.poll(() => workspaceMenu.count()).toBe(0);
+        // Keep pending hover hints out of the keyboard-only mobile flow.
+        await page.mouse.move(-1, -1);
         await page.setViewportSize({ width: 390, height: 844 });
         const drawerToggle = page
           .locator(".topbar-nav-toggle:visible, .chat-pane__nav-toggle:visible")
           .first();
-        await drawerToggle.click();
+        // Keep keyboard navigation free of hover tooltips while the drawer slides in.
+        await drawerToggle.press("Enter");
+        await waitForMobileSidebarDrawerOpen(page);
         for (const trigger of [chip, workspace]) {
           if (trigger === workspace) {
             await chip.press("Enter");

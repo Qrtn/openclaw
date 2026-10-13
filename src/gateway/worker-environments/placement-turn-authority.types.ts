@@ -57,17 +57,20 @@ export type RetainedPlacement = {
 };
 export type PlacementAuthorityOwner = {
   identity: DatabasePathIdentity;
-  incarnation: string;
   active: boolean;
   claims: Map<string, Set<RetainedClaim>>;
-  observations: Map<string | undefined, Set<{ revoked: boolean; indeterminate: boolean }>>;
+  placements: Map<
+    string,
+    { placement: WorkerSessionPlacementRecord | undefined; sequence: number }
+  >;
+  observations: Map<string | undefined, Set<{ revokedBy: Set<string>; indeterminate: boolean }>>;
   placementReaders: Map<string, Set<RetainedPlacement>>;
   pending: Set<ClaimChange>;
-  settlementListeners: Set<() => void>;
   sequence: number;
   published: Map<string, number>;
   tools: Map<string, { sequence: number; authority?: ToolAuthority }>;
   workspaceResults: Map<string, WorkspaceResultFacts>;
   projections: Map<string, WorkerSessionPlacementReadResult>;
   preservation?: WorkerSessionPlacementRecord[];
+  recoveryCandidatesEmpty?: true;
 };

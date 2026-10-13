@@ -24,6 +24,7 @@ import { canonicalSessionValidationQuery } from "./session-canonical-key.js";
 import { sessionColdArchiveMetadataColumns } from "./session-cold-storage-state.js";
 import { normalizeSessionContextEntryBoundaries } from "./session-entry-navigation.js";
 import { sessionEntrySnapshotColumnsForKeys } from "./session-entry-snapshots.js";
+import { projectSessionTranscriptFacts } from "./session-transcript-projection-facts.js";
 import { collectSessionEntryLookupKeys } from "./store-entry.js";
 import { transcriptEventModelNavigationSql } from "./transcript-payload.js";
 import {
@@ -368,9 +369,11 @@ export function hydrateSessionActorState(
       writeToken,
       dependencySessionIds: [],
       entry,
+      hasBoard: Boolean(selected?.actor_has_board),
       participants,
       members,
       pendingInputs: [],
+      completionKeys: [],
       transcript: {
         version: contextVersion,
         watermark: { generation: contextVersion.generation, maxSeq: contextVersion.rawSeq },
@@ -411,7 +414,30 @@ export function hydrateSessionActorState(
 
 /** Derives disclosure only from the actor's owned postimage, without touching SQLite. */
 export function projectSessionActorHotState(state: SessionActorStoredState): SessionActorHotState {
-  const hot = structuredClone(state.hot);
+  // Detach retained facts without cloning the derived collections replaced below.
+  const hot: SessionActorHotState = {
+    ...structuredClone({
+      target: state.hot.target,
+      version: state.hot.version,
+      entry: state.hot.entry,
+      participants: state.hot.participants,
+      members: state.hot.members,
+    }),
+    writeToken: state.hot.writeToken,
+    hasBoard: state.hasBoard,
+    dependencySessionIds: [],
+    pendingInputs: [],
+    completionKeys: [],
+    transcript: {
+      version: { ...state.hot.transcript.version },
+      watermark: { ...state.hot.transcript.watermark },
+      anchorsState: "unavailable",
+      anchors: [],
+      idempotency: [],
+      modelContext: { kind: "resident", entries: [] },
+    },
+  };
+  hot.transcript.projection = projectSessionTranscriptFacts(state);
   hot.dependencySessionIds = [
     ...new Set([
       ...[...state.entryRows.values()].flatMap((row) => (row ? [row.entry.sessionId] : [])),
@@ -422,12 +448,12 @@ export function projectSessionActorHotState(state: SessionActorStoredState): Ses
   hot.pendingInputs = [...state.pendingInputs.values()].map(
     ({ message_json: _message, ...row }) => row,
   );
+  hot.completionKeys = [...state.completions.keys()];
   hot.transcript.idempotency = [...state.transcript.identities.values()].flatMap((row) =>
     row.message_idempotency_key
       ? [{ key: row.message_idempotency_key, eventId: row.event_id, rawSeq: row.seq }]
       : [],
   );
-  hot.transcript.anchors = [];
   hot.transcript.anchorsState =
     !state.transcript.coldArchive && hot.transcript.version.rawSeq === null
       ? "resident"
@@ -466,8 +492,7 @@ export function projectSessionActorHotState(state: SessionActorStoredState): Ses
   if (state.transcript.coldArchive) {
     hot.transcript.modelContext = { kind: "unavailable", reason: "cold", generation };
   } else {
-    const navigation = structuredClone(state.transcript.navigation);
-    const tree = scanSessionTranscriptTree(navigation);
+    const tree = scanSessionTranscriptTree(state.transcript.navigation);
     if (tree.hasInvalidLeafControl) {
       hot.transcript.modelContext = { kind: "unavailable", reason: "projection", generation };
     } else {

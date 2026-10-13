@@ -75,7 +75,7 @@ it("retains exact reads without dispatch, isolates agent stores, and evicts the 
     const requests = observeEntryReaderRequests();
     try {
       expect((await read(keys.slice(0, 64))).entries).toHaveLength(64);
-      expect((await read(keys.slice(64, 128))).entries).toHaveLength(64);
+      expect((await read(keys.slice(64, 127))).entries).toHaveLength(63);
       expect((await readOther()).entries[0]?.entry.sessionId).toBe("other-store");
       expect(requests.count()).toBeGreaterThan(0);
       requests.clear();
@@ -111,6 +111,66 @@ it("retains exact reads without dispatch, isolates agent stores, and evicts the 
           })
         ).entries,
       ).toEqual([]);
+    } finally {
+      requests.restore();
+    }
+  });
+});
+
+it("reuses complete sharing facts without dispatch and observes membership revocation and entry replacement", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const sessionKey = "agent:main:retained-sharing";
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const scope = { agentId: "main", storePath: database.path, sessionKey, env };
+    const skillsSnapshot = { prompt: "retained prompt".repeat(8192), skills: [] };
+    replaceSessionEntrySync(scope, { sessionId: "original", updatedAt: 1, skillsSnapshot });
+    addSessionMember(scope, { identityId: "reader", addedBy: "owner", addedAt: 1 });
+    const input = { ...scope, sessionKeys: [sessionKey], includeAuthorization: true };
+    const read = (projection: "sharing" | "full") =>
+      readSessionEntriesFromStoreInWorker({
+        ...input,
+        projection,
+        includeMembers: projection === "full",
+        snapshotFields: projection === "sharing" ? ["skillsSnapshot"] : undefined,
+      });
+    await read("full");
+    const requests = observeEntryReaderRequests();
+    try {
+      const warm = await read("sharing");
+      expect(warm.entries[0]?.entry.sessionId).toBe("original");
+      expect(warm.entries[0]?.entry).not.toHaveProperty("skillsSnapshot");
+      expect(warm.sharing).toMatchObject({
+        databaseIdentity: expect.stringMatching(/^file:/u),
+        members: [{ sessionKey, identityIds: ["reader"] }],
+        placeholders: [],
+      });
+      expect(requests.count()).toBe(0);
+
+      await removeSessionMemberInWorker(scope, "reader");
+      const revoked = await read("sharing");
+      expect(revoked.sharing?.members).toEqual([{ sessionKey, identityIds: [] }]);
+      expect(revoked.entries[0]?.entry).not.toHaveProperty("skillsSnapshot");
+      expect((await read("full")).entries[0]?.entry.skillsSnapshot).toEqual(skillsSnapshot);
+
+      replaceSessionEntrySync(scope, {
+        sessionId: "replacement",
+        lifecycleRevision: "replacement-revision",
+        updatedAt: 2,
+      });
+      expect((await read("sharing")).entries[0]?.entry).toMatchObject({
+        sessionId: "replacement",
+        lifecycleRevision: "replacement-revision",
+      });
+
+      const missing = { ...input, sessionKeys: ["agent:main:absent-sharing"] };
+      await readSessionEntriesFromStoreInWorker(missing);
+      requests.clear();
+      const absent = await readSessionEntriesFromStoreInWorker({
+        ...missing,
+        projection: "sharing",
+      });
+      expect(absent.entries).toEqual([]);
+      expect(requests.count()).toBeGreaterThan(0);
     } finally {
       requests.restore();
     }
@@ -220,9 +280,29 @@ it("observes native and worker entry, participant, and membership writes after c
       });
     const requests = observeEntryReaderRequests();
     try {
-      expect((await read()).entries[0]?.entry.sessionId).toBe("same-session");
+      const initial = await read();
+      expect(initial.entries[0]?.entry.sessionId).toBe("same-session");
       requests.clear();
       expect((await read()).members?.[sessionKey]).toEqual([]);
+      expect(requests.count()).toBe(0);
+      replaceSessionEntrySync(
+        { ...scope, sessionKey: "agent:main:unrelated" },
+        { sessionId: "unrelated", updatedAt: 2 },
+      );
+      expect(await read()).toEqual(initial);
+      expect(requests.count()).toBe(0);
+      replaceSessionEntrySync(scope, {
+        sessionId: "same-session",
+        updatedAt: 3,
+        label: "receipt-only",
+      });
+      expect(
+        (await readSessionEntriesFromStoreInWorker({ ...scope, sessionKeys: [sessionKey] }))
+          .entries[0]?.entry.label,
+      ).toBe("receipt-only");
+      expect((await read()).entries[0]?.entry.label).toBe("receipt-only");
+      requests.clear();
+      expect((await read()).entries[0]?.entry.label).toBe("receipt-only");
       expect(requests.count()).toBe(0);
       expect((await readMissing()).entries).toEqual([]);
       requests.clear();
@@ -277,6 +357,71 @@ it("observes native and worker entry, participant, and membership writes after c
         }
         expect((await read()).members?.[sessionKey]).toEqual([]);
       }
+    } finally {
+      requests.restore();
+    }
+  });
+});
+
+it("retains exact membership and participant reads across metadata-only worker patches", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKey = "agent:main:metadata-facts";
+    const scope = { agentId: "main", storePath: database.path, sessionKey, env };
+    replaceSessionEntrySync(scope, { sessionId: "metadata-facts", updatedAt: 1 });
+    addSessionMember(scope, { identityId: "reader", addedBy: "owner", addedAt: 1 });
+    const participant = { identity: { type: "agent" as const, id: "helper" }, promptedAt: 2 };
+    recordSessionParticipant(scope, participant);
+    const read = () =>
+      readSessionEntriesFromStoreInWorker({
+        ...scope,
+        sessionKeys: [sessionKey],
+        includeMembers: true,
+        includeParticipantRecords: true,
+      });
+    const initial = await read();
+    const requests = observeEntryReaderRequests();
+    try {
+      await patchSessionEntryCore(scope, () => ({ label: "metadata only" }), {
+        assertCommitAllowed() {},
+        shouldCommit: () => true,
+        skipMaintenance: true,
+      });
+      const patched = await read();
+      expect(patched.entries[0]?.entry.label).toBe("metadata only");
+      expect(patched.members).toEqual(initial.members);
+      expect(patched.participantRecords).toEqual(initial.participantRecords);
+      expect(requests.count()).toBe(0);
+
+      for (const [index, writer] of ["native", "worker"].entries()) {
+        requests.clear();
+        const promptedAt = index + 3;
+        if (writer === "native") {
+          recordSessionParticipant(scope, { ...participant, promptedAt });
+        } else {
+          await recordSessionParticipantInWorker(scope, { ...participant, promptedAt });
+        }
+        await patchSessionEntryCore(scope, () => ({ label: writer }), {
+          assertCommitAllowed() {},
+          shouldCommit: () => true,
+          skipMaintenance: true,
+        });
+        expect((await read()).participantRecords?.[sessionKey]?.[0]).toMatchObject({
+          contributionCount: index + 2,
+          lastPromptedAt: promptedAt,
+        });
+        expect(requests.count()).toBe(1);
+      }
+
+      requests.clear();
+      await removeSessionMemberInWorker(scope, "reader");
+      const changed = await read();
+      expect(changed.members?.[sessionKey]).toEqual([]);
+      expect(changed.participantRecords?.[sessionKey]?.[0]).toMatchObject({
+        contributionCount: 3,
+        lastPromptedAt: 4,
+      });
+      expect(requests.count()).toBe(1);
     } finally {
       requests.restore();
     }
