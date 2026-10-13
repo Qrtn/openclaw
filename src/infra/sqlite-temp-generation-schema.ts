@@ -35,7 +35,7 @@ export function prepareSqliteTempTrackingSchema(
   database: DatabaseSync,
   schema: SqliteTempTrackingSchema,
 ): { sql: string; unexpected: boolean } {
-  const { sql, objects } =
+  const { createSql, objects } =
     schema.kind === "generation"
       ? prepareGenerationSchema(schema)
       : prepareTranscriptIndexSchema(schema);
@@ -65,11 +65,16 @@ export function prepareSqliteTempTrackingSchema(
       normalizeSchemaSql(row.sql) !== normalizeSchemaSql(declared.sql)
     );
   });
-  return { sql, unexpected };
+  const existingTriggers = new Set(
+    existing.flatMap((row) =>
+      row.type === "trigger" && typeof row.name === "string" ? [row.name.toLowerCase()] : [],
+    ),
+  );
+  return { sql: createSql(existingTriggers), unexpected };
 }
 
 function prepareGenerationSchema(schema: SqliteTempGenerationSchema): {
-  sql: string;
+  createSql: (existingTriggers: ReadonlySet<string>) => string;
   objects: SqliteTempObject[];
 } {
   const increment = `SELECT ${quoteSqliteIdentifier(schema.functionName)}();`;
@@ -77,16 +82,19 @@ function prepareGenerationSchema(schema: SqliteTempGenerationSchema): {
     ...trigger,
     definition: `TRIGGER ${quoteSqliteIdentifier(trigger.name)} AFTER ${trigger.operation} ON main.${quoteSqliteIdentifier(trigger.table)} BEGIN ${increment} END`,
   }));
-  const sql = `
+  const createSql = (existingTriggers: ReadonlySet<string>) => `
     ${triggers
       .map(({ name, definition, enabled }) => {
         const trigger = quoteSqliteIdentifier(name);
-        return `DROP TRIGGER IF EXISTS temp.${trigger};${enabled ? `CREATE TEMP ${definition};` : ""}`;
+        const drop = existingTriggers.has(name.toLowerCase())
+          ? `DROP TRIGGER IF EXISTS temp.${trigger};`
+          : "";
+        return `${drop}${enabled ? `CREATE TEMP ${definition};` : ""}`;
       })
       .join("\n")}
   `;
   return {
-    sql,
+    createSql,
     objects: triggers.map((trigger): SqliteTempObject => ({
       name: trigger.name,
       type: "trigger",
@@ -97,7 +105,7 @@ function prepareGenerationSchema(schema: SqliteTempGenerationSchema): {
 }
 
 function prepareTranscriptIndexSchema(schema: SqliteTempTranscriptIndexSchema): {
-  sql: string;
+  createSql: (existingTriggers: ReadonlySet<string>) => string;
   objects: SqliteTempObject[];
 } {
   const status = quoteSqliteIdentifier(schema.statusTable);
@@ -142,21 +150,23 @@ function prepareTranscriptIndexSchema(schema: SqliteTempTranscriptIndexSchema): 
     }),
   );
   // Update before the conflict-free insert preserves an outer INSERT OR REPLACE policy.
-  const sql = `
+  const createSql = (existingTriggers: ReadonlySet<string>) => `
     CREATE TEMP TABLE IF NOT EXISTS ${statusTable};
     INSERT OR IGNORE INTO temp.${status} VALUES (1, -1, -1, 0, NULL, 0);
     UPDATE temp.${status} SET sibling_write_revision = -1;
     CREATE TEMP TABLE IF NOT EXISTS ${pendingTable};
     CREATE INDEX IF NOT EXISTS temp.${pendingIndex};
     ${triggers
-      .map(
-        ({ name, definition }) =>
-          `DROP TRIGGER IF EXISTS temp.${quoteSqliteIdentifier(name)};CREATE TEMP ${definition};`,
-      )
+      .map(({ name, definition }) => {
+        const drop = existingTriggers.has(name.toLowerCase())
+          ? `DROP TRIGGER IF EXISTS temp.${quoteSqliteIdentifier(name)};`
+          : "";
+        return `${drop}CREATE TEMP ${definition};`;
+      })
       .join("\n")}
   `;
   return {
-    sql,
+    createSql,
     objects: [
       {
         name: schema.statusTable,

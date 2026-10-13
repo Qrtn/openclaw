@@ -3013,7 +3013,8 @@ later native handles check physical file identity and reuse those facts without
 schema-marker queries or canonical table, index, trigger, and integrity scans.
 Session generation and transcript-index trackers declare their fixed connection-local
 tables, indexes, and triggers to the schema owner, which checks existing TEMP names
-and shapes once at installation. Installing those declared TEMP tracking objects
+and shapes once at installation. That snapshot also skips drops for absent
+triggers on a fresh connection. Installing those declared TEMP tracking objects
 does not cause another validation of the physical database. The migration or repair owner publishes
 replacement facts for committed local DDL; rollback cannot publish uncommitted
 facts. Host-handle eviction preserves process admission and never falls back to
@@ -3024,6 +3025,11 @@ replacement requires first admission for the replacement; revoked integrity
 requires recovery through its existing owner. The physical store's schema owner
 is fixed at admission; live session ownership and permissions still use their
 current-row checks.
+
+Canonical session validation derives its one pending-queue table definition from
+the bundled schema SQL. Fresh readers compare admitted or observed definitions
+against that contract without constructing another in-memory SQLite database;
+unexpected validation triggers and changed table definitions still fail admission.
 
 The same admission records the database's text encoding alongside its version.
 Transcript payload preparation consumes that published encoding, including across
