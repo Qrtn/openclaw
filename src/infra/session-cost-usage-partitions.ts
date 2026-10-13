@@ -69,6 +69,9 @@ export function decodeUsageCostPartition(
       typeof metadata.bytes !== "number" ||
       !Number.isSafeInteger(metadata.bytes) ||
       metadata.bytes <= 0 ||
+      (metadata.encoding === "identity"
+        ? metadata.bytes !== blob.byteLength
+        : metadata.bytes <= blob.byteLength) ||
       typeof metadata.sha256 !== "string"
     ) {
       return undefined;

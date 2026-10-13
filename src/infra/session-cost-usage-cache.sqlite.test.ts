@@ -930,7 +930,7 @@ it.each(["valid", "missing", "truncated"] as const)(
   },
 );
 
-it.each(["missing", "oversized-first", "oversized-last"])(
+it.each(["missing", "oversized-first", "oversized-last", "identity-length"])(
   "repairs %s monthly partitions and filters within and across months",
   async (mode) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -953,6 +953,26 @@ it.each(["missing", "oversized-first", "oversized-last"])(
       await refreshCostUsageCacheForAgent(options);
       runOpenClawAgentWriteTransaction(
         ({ db }) => {
+          if (mode === "identity-length") {
+            const partition = db
+              .prepare(
+                "SELECT key, value_json FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1",
+              )
+              .get(USAGE_COST_PARTITION_SCOPE);
+            if (!partition || typeof partition.value_json !== "string") {
+              throw new Error("Expected partition header");
+            }
+            db.prepare("UPDATE cache_entries SET value_json = ? WHERE scope = ? AND key = ?").run(
+              JSON.stringify({
+                ...JSON.parse(partition.value_json),
+                encoding: "identity",
+                bytes: 35 * 1024 * 1024,
+              }),
+              USAGE_COST_PARTITION_SCOPE,
+              partition.key,
+            );
+            return;
+          }
           db.prepare(
             mode === "missing"
               ? "DELETE FROM cache_entries WHERE (scope, key) IN (SELECT scope, key FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1)"

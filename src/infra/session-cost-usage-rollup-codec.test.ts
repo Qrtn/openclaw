@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeUsageCostPartition,
+  partitionUsageCostRollup,
+} from "./session-cost-usage-partitions.js";
+import {
   decodeUsageCostRollup,
   decodeUsageCostRollupEnvelope,
   encodeUsageCostRollup,
@@ -127,4 +131,28 @@ describe("usage rollup storage codec", () => {
       }),
     ).toBeNull();
   });
+
+  it.each([1, 512])(
+    "rejects impossible partition lengths before deferring %i records",
+    (records) => {
+      const original = entry(records);
+      const partition = partitionUsageCostRollup(original).partitions[0];
+      const metadata = JSON.parse(partition.valueJson);
+      for (const header of [
+        { ...metadata, encoding: "identity", bytes: 35 * 1024 * 1024 },
+        { ...metadata, encoding: "identity", bytes: partition.blob.byteLength + 1 },
+        { ...metadata, encoding: "zstd", bytes: partition.blob.byteLength },
+      ]) {
+        expect(
+          decodeUsageCostPartition(JSON.stringify(header), partition.blob, { remainingBytes: 0 }),
+        ).toBeUndefined();
+      }
+      expect(
+        decodeUsageCostPartition(partition.valueJson, partition.blob, { remainingBytes: 0 }),
+      ).toBeNull();
+      expect(decodeUsageCostPartition(partition.valueJson, partition.blob)).toMatchObject({
+        buckets: { "0": { totals: { totalTokens: records } } },
+      });
+    },
+  );
 });
