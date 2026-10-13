@@ -123,9 +123,12 @@ execution, or through a recorded attempt or event. It can be combined with
 `boardId`; omitting it keeps the full-list behavior. Selection happens in the
 database before card notes, comments, events, and other details are loaded.
 Ordinary keys and Matrix/Signal structural segments compare without case;
-opaque peer IDs and catalog source identifiers retain their exact identity. Candidate matching reads only
-session-link fields before loading the matching cards. Reconnects request a fresh snapshot of the same
-scope. `plugin.workboard.changed` includes
+opaque peer IDs and catalog source identifiers retain their exact identity. The
+Control UI and server filter share `normalizeSessionKeyForComparison` from
+`@openclaw/normalization-core`, exposed to the plugin through
+`openclaw/plugin-sdk/session-key-runtime`. Candidate matching reads only session-link
+fields before loading matching cards. Reconnects request a fresh snapshot of the
+same scope. `plugin.workboard.changed` includes
 an event `revision` and a separate `cardsRevision`: session-fact notifications
 advance the event sequence without invalidating unchanged cards.
 

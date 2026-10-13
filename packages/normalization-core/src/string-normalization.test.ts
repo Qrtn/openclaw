@@ -6,6 +6,7 @@ import {
   normalizeCsvOrLooseStringList,
   normalizeHyphenSlug,
   normalizeOptionalTrimmedStringList,
+  normalizeSessionKeyForComparison,
   normalizeSortedUniqueStringEntries,
   normalizeSortedUniqueTrimmedStringList,
   normalizeStringEntries,
@@ -18,6 +19,25 @@ import {
 } from "./string-normalization.js";
 
 describe("normalization-core/string-normalization", () => {
+  it.each([
+    [" Agent:OPS:Telegram:Direct:ABC ", "agent:ops:telegram:direct:abc"],
+    [" \t\n", ""],
+    [
+      "Agent:Ops:Catalog:Fixture:Node%3ADevBox:Thread%3AA",
+      "agent:ops:Catalog:Fixture:Node%3ADevBox:Thread%3AA",
+    ],
+    ["agent:ops:other:signal:group:AbC", "agent:ops:other:signal:group:abc"],
+    ["agent:ops:signal:group:AbC:signal:group:DeF", "agent:ops:signal:group:AbC:signal:group:def"],
+    [":Matrix:Channel:!Room:Org", ":matrix:channel:!Room:Org"],
+    ["agent:ops: :Matrix:Channel:!Room:Org", "agent:ops: :matrix:channel:!Room:Org"],
+    [
+      "agent:ops:matrix:channel: !Room:Org :thread:$Event",
+      "agent:ops:matrix:channel: !Room:Org :thread:$Event",
+    ],
+  ])("retains session comparison normalization for %s", (key, expected) => {
+    expect(normalizeSessionKeyForComparison(key)).toBe(expected);
+  });
+
   it.each([
     { label: "empty", value: "", expected: false },
     { label: "printable Unicode", value: "fix/a&b λ", expected: false },
