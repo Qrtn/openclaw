@@ -783,12 +783,13 @@ if (!isMainThread) {
       const returnedBytes = cacheRows.reduce((total, row) => total + row.valueBytes, 0);
       expect(returnedBytes, "selected cache JSON bytes").toBeGreaterThan(0);
       expect(returnedBytes, "selected cache JSON bytes").toBeLessThan(16 * 1_024);
+      const comparePaths = (a: string, b: string) => a.localeCompare(b);
       expect(
         cacheRows
           .filter((row) => row.valueBytes > 0)
           .map((row) => row.key)
-          .toSorted(),
-      ).toEqual(sessions.map((session) => session.sessionFile).toSorted());
+          .toSorted(comparePaths),
+      ).toEqual(sessions.map((session) => session.sessionFile).toSorted(comparePaths));
     });
   });
 });
