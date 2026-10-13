@@ -26,7 +26,7 @@ describe("plugin-sdk provider-selection-runtime", () => {
     const params = {
       cfg: {},
       cfgForResolve: {},
-      getConfiguredProvider: (providerId: string) =>
+      getConfiguredProvider: (providerId: string | undefined) =>
         providers.find((entry) => entry.id === providerId),
       listProviders: () => providers,
       resolveProviderConfig: () => ({}),

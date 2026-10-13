@@ -366,6 +366,7 @@ test("slow writer failure separates waiting and execution", async () => {
     });
     const scope = { agentId: "main", env: state.env };
     const release = createDeferredCore();
+    const firstStarted = createDeferredCore();
     const order: string[] = [];
     const diagnostics: SqliteSessionReclamationDiagnostics = {};
     const first = owners.run("first", () =>
@@ -373,6 +374,7 @@ test("slow writer failure separates waiting and execution", async () => {
         scope,
         async () => {
           order.push("first:start");
+          firstStarted.resolve();
           await release.promise;
           Object.assign(diagnostics, {
             kind: "history-eviction",
@@ -386,35 +388,38 @@ test("slow writer failure separates waiting and execution", async () => {
         diagnostics,
       ),
     );
-    expect(order).toEqual(["first:start"]);
-    clock = 100;
-    const failure = new Error("synthetic writer failure");
-    const second = owners.run("second", () =>
-      runExclusiveSqliteSessionWrite(
-        scope,
-        async () => {
-          order.push("second:start");
-          clock += 400;
-          throw failure;
-        },
-        "session.maintenance.plan",
-      ),
-    );
-    const settled = second.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
-    const queuedSuccessor = owners.run("queued-successor", () =>
-      runExclusiveSqliteSessionWrite(
-        scope,
-        async () => {
-          order.push("queued-successor");
-          return "queued-successor";
-        },
-        "session.pending-input.stage",
-      ),
-    );
+    let second: Promise<string> | undefined;
+    let queuedSuccessor: Promise<string> | undefined;
     try {
+      await firstStarted.promise;
+      expect(order).toEqual(["first:start"]);
+      clock = 100;
+      const failure = new Error("synthetic writer failure");
+      second = owners.run("second", () =>
+        runExclusiveSqliteSessionWrite(
+          scope,
+          async () => {
+            order.push("second:start");
+            clock += 400;
+            throw failure;
+          },
+          "session.maintenance.plan",
+        ),
+      );
+      const settled = second.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      queuedSuccessor = owners.run("queued-successor", () =>
+        runExclusiveSqliteSessionWrite(
+          scope,
+          async () => {
+            order.push("queued-successor");
+            return "queued-successor";
+          },
+          "session.pending-input.stage",
+        ),
+      );
       expect(order).toEqual(["first:start"]);
       clock = 1_600;
       release.resolve();
