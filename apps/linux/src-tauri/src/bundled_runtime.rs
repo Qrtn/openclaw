@@ -454,7 +454,10 @@ mod tests {
                 content.to_vec()
             };
             fs::write(output, bytes).unwrap();
-            manifest["files"][file] = serde_json::json!(format!("{:x}", Sha256::digest(content)));
+            manifest["files"][file] = serde_json::json!(Sha256::digest(content)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>());
         }
         fixture.manifest = manifest.to_string();
         fs::write(fixture.source.join("manifest.json"), &fixture.manifest).unwrap();
