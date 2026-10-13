@@ -1,5 +1,4 @@
 import { withTimeout } from "@openclaw/fs-safe/advanced";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CDPSession, Page } from "playwright";
 
 const RENDERER_STALL_BUDGET_MS = 3_000;
@@ -10,74 +9,6 @@ const controlUiE2eRendererStallProbes = new WeakMap<
   Promise<{ session: CDPSession; scripts: Map<string, string>; cleanup(): void } | null>
 >();
 
-type RenderLifecycleReport = { invalidations: number; commits: number; writers: string[] };
-type RenderLifecycleWindow = Window & {
-  openclawRenderLifecycleTestHook?: (host: object, phase: "invalidate" | "commit") => void;
-  openclawControlUiE2eRenderLifecycle?: () => RenderLifecycleReport;
-};
-
-/** Test-owned counters only; no host, message, or conversation references survive a hook call. */
-function recordRenderLifecycles() {
-  // SAFETY: This synthetic realm installs the existing hook and its test-owned report reader.
-  const scope = window as RenderLifecycleWindow;
-  // An accessor returns the adapter dispatcher, never the replaceable inner probe.
-  const descriptor = Object.getOwnPropertyDescriptor(scope, "openclawRenderLifecycleTestHook");
-  const previous =
-    descriptor && !descriptor.get && !descriptor.set
-      ? scope.openclawRenderLifecycleTestHook
-      : undefined;
-  const report: RenderLifecycleReport = { invalidations: 0, commits: 0, writers: [] };
-  const restore = () => {
-    scope.openclawRenderLifecycleTestHook = previous;
-    delete scope.openclawControlUiE2eRenderLifecycle;
-    window.removeEventListener("pagehide", restore);
-  };
-  const hook: NonNullable<RenderLifecycleWindow["openclawRenderLifecycleTestHook"]> = (
-    host,
-    phase,
-  ) => {
-    const native = host instanceof HTMLElement;
-    const element: unknown = native ? host : Reflect.get(host, "element");
-    if (!(element instanceof HTMLElement) || element.localName !== "openclaw-chat-pane") {
-      return;
-    }
-    if (phase === "commit" && native) {
-      report.commits += 1;
-    }
-    if (phase !== "invalidate" || native) {
-      return;
-    }
-    report.invalidations += 1;
-    if (report.writers.length === 12) {
-      return;
-    }
-    for (const match of (new Error().stack ?? "")
-      .slice(0, 4096)
-      .matchAll(
-        /\/((?:control-ui-(?:boot-(?:chat|shared|new)|core|foundation)|index|ui|solid-dom|lit-runtime)-[A-Za-z0-9_-]{1,64}\.js:\d{1,7}:\d{1,7})\)?/gu,
-      )) {
-      if (!report.writers.includes(match[1]!)) {
-        report.writers.push(match[1]!);
-      }
-      if (report.writers.length === 12) {
-        break;
-      }
-    }
-  };
-  scope.openclawRenderLifecycleTestHook = hook;
-  scope.openclawControlUiE2eRenderLifecycle = () => {
-    restore();
-    return report;
-  };
-  window.addEventListener("pagehide", restore, { once: true });
-}
-
-export async function installControlUiE2eRenderLifecycleProbe(page: Page): Promise<void> {
-  await page.addInitScript({
-    content: `;(() => { const __name = (target) => target; (${recordRenderLifecycles.toString()})(); })();`,
-  });
-}
-
 type RendererStallFrame = { functionName: string; script: string; line: number; column: number };
 type RendererStall = {
   /** Renderer main-thread time spent during the sample window, by kind. */
@@ -85,7 +16,6 @@ type RendererStall = {
   sampleMs: number;
   /** Paused JavaScript frames (1-based positions); null when no script was running. */
   stack: RendererStallFrame[] | null;
-  renderLifecycle: RenderLifecycleReport | null;
 };
 
 /** Runs in the page: keeps the last script-attributed frames that blocked for a second or more. */
@@ -227,7 +157,7 @@ export async function captureControlUiE2eRendererStall(
     return null;
   }
   const { session, scripts } = armed;
-  const stall: RendererStall = { busyMs: null, sampleMs: 0, stack: null, renderLifecycle: null };
+  const stall: RendererStall = { busyMs: null, sampleMs: 0, stack: null };
   let pauseRequested = false;
   try {
     const sample = async () => {
@@ -250,56 +180,20 @@ export async function captureControlUiE2eRendererStall(
     };
     const paused = new Promise<void>((resolve) => {
       session.on("Debugger.paused", ({ callFrames }) => {
-        void (async () => {
-          try {
-            if (stall.stack !== null) {
-              return;
-            }
-            stall.stack = callFrames.slice(0, RENDERER_STALL_FRAME_LIMIT).map((frame) => ({
-              functionName: frame.functionName || "(anonymous)",
-              script: stallScriptPath(frame.url) || scripts.get(frame.location.scriptId) || "",
-              line: frame.location.lineNumber + 1,
-              column: (frame.location.columnNumber ?? 0) + 1,
-            }));
-            const frame = callFrames[0];
-            if (frame) {
-              const response = await withTimeout(
-                session.send("Debugger.evaluateOnCallFrame", {
-                  callFrameId: frame.callFrameId,
-                  expression: "globalThis.openclawControlUiE2eRenderLifecycle?.()",
-                  returnByValue: true,
-                  silent: true,
-                }),
-                remaining(),
-              );
-              const value = asOptionalRecord(response.result?.value);
-              if (typeof value?.invalidations === "number" && typeof value?.commits === "number") {
-                stall.renderLifecycle = {
-                  invalidations: value.invalidations,
-                  commits: value.commits,
-                  writers: Array.isArray(value.writers)
-                    ? [
-                        ...new Set(
-                          value.writers.filter(
-                            (writer): writer is string =>
-                              typeof writer === "string" &&
-                              /^(?:control-ui-(?:boot-(?:chat|shared|new)|core|foundation)|index|ui|solid-dom|lit-runtime)-[A-Za-z0-9_-]{1,64}\.js:\d{1,7}:\d{1,7}$/u.test(
-                                writer,
-                              ),
-                          ),
-                        ),
-                      ].slice(0, 12)
-                    : [],
-                };
-              }
-            }
-          } catch {
-            // Optional counters cannot hold the original failure or prevent resume.
-          } finally {
-            void session.send("Debugger.resume").catch(() => {});
-            resolve();
+        try {
+          if (stall.stack !== null) {
+            return;
           }
-        })();
+          stall.stack = callFrames.slice(0, RENDERER_STALL_FRAME_LIMIT).map((frame) => ({
+            functionName: frame.functionName || "(anonymous)",
+            script: stallScriptPath(frame.url) || scripts.get(frame.location.scriptId) || "",
+            line: frame.location.lineNumber + 1,
+            column: (frame.location.columnNumber ?? 0) + 1,
+          }));
+        } finally {
+          void session.send("Debugger.resume").catch(() => {});
+          resolve();
+        }
       });
     });
     pauseRequested = true;

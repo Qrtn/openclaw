@@ -2,7 +2,6 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import { installControlUiE2eRenderLifecycleProbe } from "../test-helpers/control-ui-e2e-renderer-stall.ts";
 import {
   controlUiSessionUrl,
   createChatFlowE2eSuite,
@@ -39,9 +38,6 @@ suite.define(() => {
     async ({ name, sourceId, sourceText, deepWork }) => {
       const artifactDir = createControlUiE2eArtifactDir(`chat-reply-reveal-${sourceId}`);
       await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
-        if (deepWork) {
-          await installControlUiE2eRenderLifecycleProbe(page);
-        }
         const sessionKey = `agent:main:dashboard:reply-reveal-${sourceId}`;
         const settledRunId = "museum-inventory-run";
         const earlierWork = deepWork
