@@ -153,6 +153,10 @@ cascade, while windows transferred to a surviving session retain their scopes.
 Shared retirement flags remove those scopes and exited workers' reference cells
 from later admission snapshots; stale transfers cannot restore them. Recreated
 scope keys receive a fresh receipt identity, so old cached reads remain invalid.
+Worker exit invalidates row receipts only for databases that worker borrowed;
+retiring an unrelated idle worker preserves session and auth caches. Unsettled
+exits still invalidate the borrowed database, while a clean exit after native
+close preserves its committed receipts.
 Receipt metadata follows retained session scopes rather than all deleted sessions;
 reads of absent keys can still register a scope. Replacement files still require
 admission through the same owner. Schemas, stored data, and update behavior are

@@ -51,7 +51,6 @@ it.each([
   { code: 1, references: 0, invalidates: true },
   { code: undefined, references: 0, invalidates: true },
   { code: 0, references: 1, invalidates: true },
-  { code: 0, references: undefined, invalidates: true },
 ])(
   "settles worker exit $code with $references references without releasing siblings",
   ({ code, references, invalidates }) => {
@@ -105,6 +104,27 @@ it.each([
     }
   },
 );
+
+it.each([0, 1, undefined])("preserves unrelated receipts when a worker exits with %s", (code) => {
+  const location = path.join(tempDirs.make("sqlite-admission-unrelated-exit-"), "proof.sqlite");
+  const database = createDatabase(location);
+  const events = new EventEmitter<{ exit: [number | undefined] }>();
+  const worker = Object.assign(events, { threadId: 12345 });
+  try {
+    const token = readSqliteDatabaseScopedWriteToken(database, "proof");
+    expect(token).toBeDefined();
+    trackSqliteDatabaseAdmissionWorker(worker);
+    events.emit("exit", code);
+    expect(readSqliteDatabaseScopedWriteToken(database, "proof")).toBe(token);
+
+    database.prepare("UPDATE proof SET value = 43").run();
+    expect(readSqliteDatabaseScopedWriteToken(database, "proof")).not.toBe(token);
+    expect(database.prepare("SELECT value FROM proof").get()).toEqual({ value: 43 });
+  } finally {
+    database.close();
+    retireSqliteDatabaseAdmissionForPath(location);
+  }
+});
 
 it("retires the final closed handle's facts while preserving open siblings and descriptor custody", () => {
   const location = path.join(tempDirs.make("sqlite-admission-retention-"), "proof.sqlite");
