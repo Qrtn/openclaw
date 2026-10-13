@@ -214,6 +214,10 @@ export function renderSidebarRegion(params: {
   const main = sidebarMainPanel(params.layout);
   const chatMain = !main || main.slot === "conversation";
   const column = params.layout.columns[0];
+  // The successful outlet belongs to Solid; its cleanup must not eject a Lit child marker.
+  const rightRuntime = regionError
+    ? html`<div class="sidebar-region__right-runtime">${regionError}</div>`
+    : html`<div class="sidebar-region__right-runtime"></div>`;
   return html`<div
     class="sidebar-region ${params.background ? "sidebar-region--background" : ""} ${collapsed ? "sidebar-region--narrow" : ""} ${
       params.layout.expanded ? "sidebar-region--expanded" : ""
@@ -281,7 +285,7 @@ export function renderSidebarRegion(params: {
     >
       ${params.primary}
     </div>
-    <div class="sidebar-region__right-runtime">${regionError ?? null}</div>
+    ${rightRuntime}
   </div>`;
 }
 
