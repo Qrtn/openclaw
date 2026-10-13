@@ -554,7 +554,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     result: unknown,
     willContinue = false,
   ): Promise<void> {
-    if (this.completedToolCalls.has(callId)) {
+    if (this.closed || this.completedToolCalls.has(callId)) {
       return;
     }
     this.submittingToolCalls.add(callId);
