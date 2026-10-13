@@ -196,7 +196,7 @@ export async function startTalkRealtimeAgentConsult(
               sessionKey: params.sessionTarget.canonicalKey,
               runId,
               callId: params.callId,
-              transcriptStart: { sessionId: chat.sessionId, afterSeq: facts.watermark.maxSeq },
+              transcriptStart: { sessionId: chat.sessionId, afterSeq: facts.watermark.maxSeq ?? 0 },
               assertCurrent: assertWorkAdmissionCurrent,
               registerVoice: async (assertRelayCurrent, physicalSource, onRegistered) => {
                 await params.onRunStarted(runId, {
