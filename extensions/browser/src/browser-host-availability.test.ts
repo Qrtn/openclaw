@@ -104,7 +104,6 @@ describe("browser host availability", () => {
               exe: { kind: "chrome", path: "/usr/bin/google-chrome" },
               userDataDir: "/browser/user-data",
               cdpPort: profile.cdpPort,
-              startedAt: 1,
               proc: new ChildProcess(),
             },
           },

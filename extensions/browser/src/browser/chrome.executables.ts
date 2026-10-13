@@ -1,7 +1,7 @@
-/** Chromium-family executable discovery across supported platforms. */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathExistsSync as exists } from "openclaw/plugin-sdk/security-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -99,14 +99,6 @@ const CHROMIUM_EXE_NAMES = new Set([
   "yandex-browser",
 ]);
 
-function exists(filePath: string) {
-  try {
-    return fs.existsSync(filePath);
-  } catch {
-    return false;
-  }
-}
-
 function isExecutable(filePath: string, platform: NodeJS.Platform): boolean {
   try {
     if (!fs.statSync(filePath).isFile()) {
@@ -122,27 +114,12 @@ function isExecutable(filePath: string, platform: NodeJS.Platform): boolean {
 
 function inferKindFromIdentifier(identifier: string): BrowserExecutable["kind"] {
   const id = normalizeLowercaseStringOrEmpty(identifier);
-  if (id.includes("brave")) {
-    return "brave";
+  for (const kind of ["brave", "edge", "chromium", "canary"] as const) {
+    if (id.includes(kind)) {
+      return kind;
+    }
   }
-  if (id.includes("edge")) {
-    return "edge";
-  }
-  if (id.includes("chromium")) {
-    return "chromium";
-  }
-  if (id.includes("canary")) {
-    return "canary";
-  }
-  if (
-    id.includes("opera") ||
-    id.includes("vivaldi") ||
-    id.includes("yandex") ||
-    id.includes("thebrowser")
-  ) {
-    return "chromium";
-  }
-  return "chrome";
+  return /opera|vivaldi|yandex|thebrowser/.test(id) ? "chromium" : "chrome";
 }
 
 function detectDefaultChromiumExecutable(platform: NodeJS.Platform): BrowserExecutable | null {
@@ -245,11 +222,10 @@ function detectDefaultChromiumExecutableLinux(): BrowserExecutable | null {
   if (!desktopId) {
     return null;
   }
-  const trimmed = desktopId.trim();
-  if (!CHROMIUM_DESKTOP_IDS.has(trimmed)) {
+  if (!CHROMIUM_DESKTOP_IDS.has(desktopId)) {
     return null;
   }
-  const desktopPath = findDesktopFilePath(trimmed);
+  const desktopPath = findDesktopFilePath(desktopId);
   if (!desktopPath) {
     return null;
   }
@@ -327,44 +303,35 @@ function findDesktopFilePath(desktopId: string): string | null {
     path.join("/usr/share/applications", desktopId),
     path.join("/var/lib/snapd/desktop/applications", desktopId),
   ];
-  for (const candidate of candidates) {
-    if (exists(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
+  return candidates.find((candidate) => exists(candidate)) ?? null;
 }
 
 function readDesktopExecLine(desktopPath: string): string | null {
   try {
-    const raw = fs.readFileSync(desktopPath, "utf8");
-    const lines = raw.split(/\r?\n/);
-    for (const line of lines) {
-      if (line.startsWith("Exec=")) {
-        return line.slice("Exec=".length).trim();
-      }
-    }
+    return (
+      fs
+        .readFileSync(desktopPath, "utf8")
+        .split(/\r?\n/)
+        .find((line) => line.startsWith("Exec="))
+        ?.slice("Exec=".length)
+        .trim() ?? null
+    );
   } catch {
-    // ignore
+    return null;
   }
-  return null;
 }
 
 function extractExecutableFromExecLine(execLine: string): string | null {
-  const tokens = splitExecLine(execLine);
-  for (const token of tokens) {
-    if (!token) {
-      continue;
-    }
-    if (token === "env") {
-      continue;
-    }
-    if (token.includes("=") && !token.startsWith("/") && !token.includes("\\")) {
-      continue;
-    }
-    return token.replace(/^["']|["']$/g, "");
-  }
-  return null;
+  return (
+    splitExecLine(execLine)
+      .find(
+        (token) =>
+          token &&
+          token !== "env" &&
+          !(token.includes("=") && !token.startsWith("/") && !token.includes("\\")),
+      )
+      ?.replace(/^["']|["']$/g, "") ?? null
+  );
 }
 
 function splitExecLine(line: string): string[] {
@@ -406,8 +373,7 @@ function resolveLinuxExecutablePath(command: string): string | null {
   if (cleaned.startsWith("/")) {
     return cleaned;
   }
-  const resolved = execBrowserProbe("which", [cleaned], 800);
-  return resolved ? resolved.trim() : null;
+  return execBrowserProbe("which", [cleaned], 800);
 }
 
 function readWindowsProgId(): string | null {
@@ -425,10 +391,7 @@ function readWindowsProgId(): string | null {
 }
 
 function readWindowsCommandForProgId(progId: string): string | null {
-  const key =
-    progId === "http"
-      ? "HKCR\\http\\shell\\open\\command"
-      : `HKCR\\${progId}\\shell\\open\\command`;
+  const key = `HKCR\\${progId}\\shell\\open\\command`;
   const output = execBrowserProbe("reg", ["query", key, "/ve"]);
   if (!output) {
     return null;
@@ -444,7 +407,6 @@ function resolveWindowsBrowserInstallRoots() {
       path.win32.join(os.homedir(), "AppData", "Local"),
     programFiles:
       normalizeOptionalString(process.env.ProgramFiles) ?? DEFAULT_WINDOWS_PROGRAM_FILES,
-    // Must use bracket notation: variable name contains parentheses.
     programFilesX86:
       normalizeOptionalString(process.env["ProgramFiles(x86)"]) ??
       DEFAULT_WINDOWS_PROGRAM_FILES_X86,
@@ -472,55 +434,36 @@ function expandWindowsEnvVars(value: string): string {
 }
 
 function extractWindowsExecutablePath(command: string): string | null {
-  const quoted = command.match(/"([^"]+\.exe)"/i);
-  if (quoted?.[1]) {
-    return quoted[1];
-  }
-  const unquoted = command.match(/^\s*(\S+\.exe)(?:\s|$)/i);
-  if (unquoted?.[1]) {
-    return unquoted[1];
-  }
-  return null;
+  return (
+    command.match(/"([^"]+\.exe)"/i)?.[1] ?? command.match(/^\s*(\S+\.exe)(?:\s|$)/i)?.[1] ?? null
+  );
 }
 
 function findFirstExecutable(
   candidates: Array<BrowserExecutable>,
   platform: NodeJS.Platform,
 ): BrowserExecutable | null {
-  for (const candidate of candidates) {
-    if (isExecutable(candidate.path, platform)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return candidates.find((candidate) => isExecutable(candidate.path, platform)) ?? null;
 }
 
 function findFirstChromeExecutable(
   candidates: string[],
   platform: NodeJS.Platform,
 ): BrowserExecutable | null {
-  for (const candidate of candidates) {
-    if (isExecutable(candidate, platform)) {
-      const normalizedPath = normalizeLowercaseStringOrEmpty(candidate);
-      return {
-        kind:
-          normalizedPath.includes("beta") ||
-          normalizedPath.includes("canary") ||
-          normalizedPath.includes("sxs") ||
-          normalizedPath.includes("unstable")
-            ? "canary"
-            : "chrome",
-        path: candidate,
-      };
-    }
+  const candidate = candidates.find((filePath) => isExecutable(filePath, platform));
+  if (!candidate) {
+    return null;
   }
-
-  return null;
+  const normalizedPath = normalizeLowercaseStringOrEmpty(candidate);
+  return {
+    kind: ["beta", "canary", "sxs", "unstable"].some((name) => normalizedPath.includes(name))
+      ? "canary"
+      : "chrome",
+    path: candidate,
+  };
 }
 
-/** Find the best Chromium-family executable on macOS. */
-function findChromeExecutableMac(): BrowserExecutable | null {
+function chromeExecutableCandidatesMac(): BrowserExecutable[] {
   const applications: Array<[BrowserExecutable["kind"], string]> = [
     ["chrome", "Google Chrome"],
     ["brave", "Brave Browser"],
@@ -529,34 +472,16 @@ function findChromeExecutableMac(): BrowserExecutable | null {
     ["canary", "Google Chrome Canary"],
   ];
   const roots = ["/Applications", path.join(os.homedir(), "Applications")];
-  const candidates = applications.flatMap(([kind, name]) =>
+  return applications.flatMap(([kind, name]) =>
     roots.map((root) => ({
       kind,
       path: path.join(root, `${name}.app`, "Contents", "MacOS", name),
     })),
   );
-
-  return findFirstExecutable(candidates, "darwin");
 }
 
-function findGoogleChromeExecutableMac(): BrowserExecutable | null {
-  return findFirstChromeExecutable(
-    [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      path.join(os.homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-      "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-      path.join(
-        os.homedir(),
-        "Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-      ),
-    ],
-    "darwin",
-  );
-}
-
-/** Find the best Chromium-family executable on Linux. */
-function findChromeExecutableLinux(): BrowserExecutable | null {
-  const candidates: Array<BrowserExecutable> = [
+function chromeExecutableCandidatesLinux(): BrowserExecutable[] {
+  return [
     { kind: "chrome", path: "/usr/bin/google-chrome" },
     { kind: "chrome", path: "/usr/bin/google-chrome-stable" },
     { kind: "chrome", path: "/usr/bin/chrome" },
@@ -574,26 +499,9 @@ function findChromeExecutableLinux(): BrowserExecutable | null {
     { kind: "chromium", path: "/usr/lib/chromium-browser/chromium-browser" },
     { kind: "chromium", path: "/snap/bin/chromium" },
   ];
-
-  return findFirstExecutable(candidates, "linux");
 }
 
-function findGoogleChromeExecutableLinux(): BrowserExecutable | null {
-  return findFirstChromeExecutable(
-    [
-      "/usr/bin/google-chrome",
-      "/usr/bin/google-chrome-stable",
-      "/usr/bin/google-chrome-beta",
-      "/usr/bin/google-chrome-unstable",
-      "/opt/google/chrome/chrome",
-      "/snap/bin/google-chrome",
-    ],
-    "linux",
-  );
-}
-
-/** Find the best Chromium-family executable on Windows. */
-function findChromeExecutableWindows(): BrowserExecutable | null {
+function chromeExecutableCandidatesWindows(): BrowserExecutable[] {
   const { localAppData, programFiles, programFilesX86 } = resolveWindowsBrowserInstallRoots();
   const browsers: Array<[BrowserExecutable["kind"], ...string[]]> = [
     ["chrome", "Google", "Chrome", "Application", "chrome.exe"],
@@ -613,39 +521,41 @@ function findChromeExecutableWindows(): BrowserExecutable | null {
     }
   }
 
-  return findFirstExecutable(candidates, "win32");
+  return candidates;
 }
 
-function findGoogleChromeExecutableWindows(): BrowserExecutable | null {
-  const { localAppData, programFiles, programFilesX86 } = resolveWindowsBrowserInstallRoots();
-  const joinWin = path.win32.join;
-  const candidates = [
-    joinWin(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
-    joinWin(localAppData, "Google", "Chrome SxS", "Application", "chrome.exe"),
-    joinWin(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
-    joinWin(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-  ];
-
-  return findFirstChromeExecutable(candidates, "win32");
+function chromeExecutableCandidates(platform: NodeJS.Platform): BrowserExecutable[] {
+  switch (platform) {
+    case "darwin":
+      return chromeExecutableCandidatesMac();
+    case "linux":
+      return chromeExecutableCandidatesLinux();
+    case "win32":
+      return chromeExecutableCandidatesWindows();
+    default:
+      return [];
+  }
 }
 
-/** Resolve the Google Chrome executable for a named platform when available. */
 export function resolveGoogleChromeExecutableForPlatform(
   platform: NodeJS.Platform,
 ): BrowserExecutable | null {
-  if (platform === "darwin") {
-    return findGoogleChromeExecutableMac();
-  }
-  if (platform === "linux") {
-    return findGoogleChromeExecutableLinux();
-  }
-  if (platform === "win32") {
-    return findGoogleChromeExecutableWindows();
-  }
-  return null;
+  const candidates =
+    platform === "linux"
+      ? [
+          "/usr/bin/google-chrome",
+          "/usr/bin/google-chrome-stable",
+          "/usr/bin/google-chrome-beta",
+          "/usr/bin/google-chrome-unstable",
+          "/opt/google/chrome/chrome",
+          "/snap/bin/google-chrome",
+        ]
+      : chromeExecutableCandidates(platform)
+          .filter(({ kind }) => kind === "chrome" || kind === "canary")
+          .map((candidate) => candidate.path);
+  return findFirstChromeExecutable(candidates, platform);
 }
 
-/** Resolve the preferred Chromium-family executable for a platform. */
 export function resolveBrowserExecutableForPlatform(
   resolved: ResolvedBrowserConfig,
   platform: NodeJS.Platform,
@@ -666,21 +576,11 @@ export function resolveBrowserExecutableForPlatform(
     return { kind: "custom", path: directPath };
   }
 
-  const detected = detectDefaultChromiumExecutable(platform);
-  if (detected) {
-    return detected;
-  }
-
-  if (platform === "darwin") {
-    return findChromeExecutableMac() ?? findPlaywrightChromiumExecutable(platform);
-  }
-  if (platform === "linux") {
-    return findChromeExecutableLinux() ?? findPlaywrightChromiumExecutable(platform);
-  }
-  if (platform === "win32") {
-    return findChromeExecutableWindows() ?? findPlaywrightChromiumExecutable(platform);
-  }
-  return null;
+  return (
+    detectDefaultChromiumExecutable(platform) ??
+    findFirstExecutable(chromeExecutableCandidates(platform), platform) ??
+    findPlaywrightChromiumExecutable(platform)
+  );
 }
 
 /** Launch suitability is not executable identity: cleanup can inspect a one-shot headless launch. */
