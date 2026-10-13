@@ -1,10 +1,10 @@
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
+import { normalizeSessionKeyForComparison } from "@openclaw/normalization-core/session-key-comparison";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { normalizeSessionKeyForComparison } from "@openclaw/normalization-core/string-normalization";
 import {
   buildAgentMainSessionKey,
   DEFAULT_MAIN_KEY,

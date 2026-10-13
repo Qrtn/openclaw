@@ -1,4 +1,4 @@
-import * as sessionKeyNormalization from "@openclaw/normalization-core/string-normalization";
+import * as sessionKeyNormalization from "@openclaw/normalization-core/session-key-comparison";
 // @vitest-environment node
 import { parseAgentSessionKeyParts } from "@openclaw/session-url-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";

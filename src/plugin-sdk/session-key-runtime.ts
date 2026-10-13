@@ -6,4 +6,4 @@ export {
   resolveAgentIdFromSessionKey,
   type ParsedAgentSessionKey,
 } from "../routing/session-key.js";
-export { normalizeSessionKeyForComparison } from "../../packages/normalization-core/src/string-normalization.js";
+export { normalizeSessionKeyForComparison } from "../../packages/normalization-core/src/session-key-comparison.js";
