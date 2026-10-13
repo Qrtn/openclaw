@@ -914,6 +914,7 @@ it.each(["valid", "missing", "truncated"] as const)(
           kind: "sessions" as const,
           sessions: [{ sessionFile }],
           pricingFingerprint: entry.pricingFingerprint,
+          dayBucket: { mode: "utc-offset" as const, utcOffsetMinutes: 0 },
         };
         expect(await runUsageCostWorker(prepared, operation)).toMatchObject({
           staleSessionFiles: [sessionFile],
@@ -929,70 +930,85 @@ it.each(["valid", "missing", "truncated"] as const)(
   },
 );
 
-it("replaces every monthly partition after cache damage and filters within and across months", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const config = {};
-    const agentId = "usage-missing-partition";
-    const sessionFile = state.path("usage-missing-partition.jsonl");
-    const record = (day: number) =>
-      JSON.stringify({
-        type: "message",
-        timestamp: new Date(Date.UTC(2026, 8, day)).toISOString(),
-        message: {
-          role: "assistant",
-          model: "fixture",
-          provider: "test",
-          usage: { input: 10, output: 0, totalTokens: 10, cost: { total: 1 } },
+it.each(["missing", "oversized-first", "oversized-last"])(
+  "repairs %s monthly partitions and filters within and across months",
+  async (mode) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const config = {};
+      const agentId = "usage-missing-partition";
+      const sessionFile = state.path("usage-missing-partition.jsonl");
+      const options = { config, agentId, sessionFiles: [sessionFile] };
+      const record = (day: number) =>
+        JSON.stringify({
+          type: "message",
+          timestamp: new Date(Date.UTC(2026, 8, day)).toISOString(),
+          message: {
+            role: "assistant",
+            model: "fixture",
+            provider: "test",
+            usage: { input: 10, output: 0, totalTokens: 10, cost: { total: 1 } },
+          },
+        }) + "\n";
+      await fs.promises.writeFile(sessionFile, record(18) + record(19) + record(31));
+      await refreshCostUsageCacheForAgent(options);
+      runOpenClawAgentWriteTransaction(
+        ({ db }) => {
+          db.prepare(
+            mode === "missing"
+              ? "DELETE FROM cache_entries WHERE (scope, key) IN (SELECT scope, key FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1)"
+              : `UPDATE cache_entries SET value_json = CASE WHEN key = (SELECT key FROM cache_entries WHERE scope = ? ORDER BY key ${mode === "oversized-last" ? "DESC" : "ASC"} LIMIT 1) THEN ? || value_json ELSE value_json END, blob = zeroblob(2097152) WHERE scope = ?`,
+          ).run(
+            ...(mode === "missing"
+              ? [USAGE_COST_PARTITION_SCOPE]
+              : [
+                  USAGE_COST_PARTITION_SCOPE,
+                  " ".repeat(64 * 1024 + 1),
+                  USAGE_COST_PARTITION_SCOPE,
+                ]),
+          );
         },
-      }) + "\n";
-    await fs.promises.writeFile(sessionFile, record(18) + record(19) + record(31));
-    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
-    runOpenClawAgentWriteTransaction(
-      ({ db }) =>
-        db
-          .prepare(
-            "DELETE FROM cache_entries WHERE (scope, key) IN (SELECT scope, key FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1)",
-          )
-          .run(USAGE_COST_PARTITION_SCOPE),
-      { agentId },
-    );
-    await fs.promises.appendFile(sessionFile, record(20));
-    await refreshCostUsageCacheForAgent({ config, agentId, sessionFiles: [sessionFile] });
-    const stored = runOpenClawAgentWriteTransaction(
-      ({ db }) =>
-        db
-          .prepare("SELECT key, value_json, blob FROM cache_entries WHERE scope = ? ORDER BY key")
-          .all(USAGE_COST_PARTITION_SCOPE),
-      { agentId },
-    );
-    expect(stored.map((row) => String(row.key).slice(-10))).toEqual(["2026-09-01", "2026-10-01"]);
-    expect(
-      stored.map((row) => {
-        if (typeof row.value_json !== "string" || !(row.blob instanceof Uint8Array)) {
-          throw new Error("Expected partition bytes");
-        }
-        const partition = decodeUsageCostPartition(row.value_json, row.blob);
-        return Object.values(partition!.buckets).reduce(
-          (sum, bucket) => sum + bucket.totals.totalTokens,
-          0,
-        );
-      }),
-    ).toEqual([30, 10]);
-    for (const [startMs, endMs, totalTokens] of [
-      [Date.UTC(2026, 8, 19), Date.UTC(2026, 8, 20) - 1, 10],
-      [Date.UTC(2026, 8, 20), Date.UTC(2026, 9, 2) - 1, 20],
-    ]) {
+        { agentId },
+      );
+      const row = readSessionCostUsageRollupRows(agentId)[0];
+      if (!row) {
+        throw new Error("Expected stored checkpoint");
+      }
+      const prepared = prepareUsageCostWorker(options);
+      const operation = {
+        kind: "sessions" as const,
+        sessions: [{ sessionFile }],
+        pricingFingerprint: JSON.parse(row.valueJson).pricingFingerprint,
+        dayBucket: { mode: "utc-offset" as const, utcOffsetMinutes: 0 },
+      };
       expect(
-        await loadSessionCostSummariesFromCache({
-          config,
-          agentId,
-          sessions: [{ sessionFile }],
-          requestRefresh: false,
-          startMs,
-          endMs,
-          dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
-        }),
-      ).toMatchObject({ summaries: [{ totalTokens }], cacheStatus: { status: "fresh" } });
-    }
-  });
-});
+        await runUsageCostWorker(prepared, { ...operation, startMs: Date.UTC(2026, 8, 18) + 1 }),
+      ).toMatchObject({ summaries: [{ totalTokens: 20 }], staleSessionFiles: [] });
+      const rejected = await runUsageCostWorker(prepared, operation);
+      expect(rejected).toMatchObject({
+        summaries: [null],
+        staleSessionFiles: [sessionFile],
+        invalidRows: [row],
+        cacheStatus: { staleFiles: 1 },
+      });
+      await refreshCostUsageCacheForAgent({ ...options, rebuildRows: [row] });
+      await fs.promises.appendFile(sessionFile, record(20));
+      await refreshCostUsageCacheForAgent(options);
+      for (const [startMs, endMs, totalTokens] of [
+        [Date.UTC(2026, 8, 19), Date.UTC(2026, 8, 20) - 1, 10],
+        [Date.UTC(2026, 8, 20), Date.UTC(2026, 9, 2) - 1, 20],
+        [Date.UTC(2026, 8, 18), Date.UTC(2026, 9, 2) - 1, 40],
+      ]) {
+        expect(
+          await loadSessionCostSummariesFromCache({
+            ...options,
+            sessions: [{ sessionFile }],
+            requestRefresh: false,
+            startMs,
+            endMs,
+            dayBucket: { mode: "utc-offset", utcOffsetMinutes: 0 },
+          }),
+        ).toMatchObject({ summaries: [{ totalTokens }], cacheStatus: { status: "fresh" } });
+      }
+    });
+  },
+);

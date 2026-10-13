@@ -49,6 +49,7 @@ export async function loadUsageResultCached<T extends object>(params: {
   isComplete?: (value: T) => boolean;
   revisionOnly?: boolean;
   maxEntries?: number;
+  shareInFlight?: boolean;
 }): Promise<T> {
   const { cache, cacheKey, configRef, revision } = params;
   const now = Date.now();
@@ -65,11 +66,14 @@ export async function loadUsageResultCached<T extends object>(params: {
   ) {
     return cached.value;
   }
-  if (cached?.inFlight) {
+  if (cached?.inFlight && params.shareInFlight !== false) {
     return cached.value && cached.updatedAt ? cached.value : await cached.inFlight;
   }
 
-  const entry: UsageCacheEntry<T> = cached ?? { configRef, revision, lastAccessedAt: now };
+  // Each request-owned flight may reuse settled data, but owns its publication and cleanup.
+  const entry: UsageCacheEntry<T> = cached
+    ? { ...cached, inFlight: undefined }
+    : { configRef, revision, lastAccessedAt: now };
   // Stale responses and cache eviction do not release the initiating owner's work.
   const inFlight = trackAsyncWork(() =>
     params

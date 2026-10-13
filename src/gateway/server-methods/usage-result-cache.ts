@@ -83,6 +83,7 @@ export async function loadSessionsUsageSnapshotCached(
   return await loadUsageResultCached({
     cache: sessionsUsageCache,
     maxEntries: 8,
+    shareInFlight: false,
     cacheKey: sessionsUsageCacheKey(params),
     configRef: params.configRef,
     revision: `${readUserProfileVersion()}:${getSessionCostUsageUpdatedAt()}:${readSessionRowChangeRevision()}:${readSessionTranscriptUpdateVersion()}:${readGatewayAccessRevision()}:${getActiveRemoteModelCatalog(params.configRef, false)?.revision ?? ""}`,

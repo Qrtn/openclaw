@@ -779,7 +779,7 @@ if (!isMainThread) {
         "selected report cache queries must amortize metadata, bodies, and partitions",
       ).toBeLessThanOrEqual(sessions.length);
       expect(reads.filter((entry) => entry.kind === "transcript")).toEqual([]);
-      const cacheRows = reads.filter((entry) => entry.kind === "cache-row");
+      const cacheRows = reads.flatMap((entry) => (entry.kind === "cache-row" ? [entry] : []));
       const returnedBytes = cacheRows.reduce((total, row) => total + row.valueBytes, 0);
       expect(returnedBytes, "selected cache JSON bytes").toBeGreaterThan(0);
       expect(returnedBytes, "selected cache JSON bytes").toBeLessThan(16 * 1_024);
@@ -1018,7 +1018,7 @@ it("bounds stored and compressed cache payloads while keeping other sessions ava
         if (variant === "stored body") {
           expect(
             reads
-              .filter((read) => read.kind === "cache-row" && read.key === row.key)
+              .flatMap((read) => (read.kind === "cache-row" && read.key === row.key ? [read] : []))
               .every((read) => read.blobBytes === 0),
             "oversized stored bodies must remain inside SQLite",
           ).toBe(true);

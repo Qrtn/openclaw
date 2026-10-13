@@ -93,6 +93,7 @@ export function readSessionCostUsagePartitionsInDatabase(
   const start = Number.isFinite(startMs) ? `${new Date(startMs).toISOString().slice(0, 7)}-01` : "";
   const end = Number.isFinite(endMs) ? `${new Date(endMs).toISOString().slice(0, 7)}-01` : "\uffff";
   const byPath = new Map<string, UsageCostPartition[]>();
+  const invalidPaths = new Set<string>();
   const kysely = getNodeSqliteKysely<CacheDatabase>(db);
   for (const paths of chunkItems([...new Set(filePaths)], 100)) {
     throwIfCancelled?.();
@@ -141,13 +142,17 @@ export function readSessionCostUsagePartitionsInDatabase(
       throwIfCancelled?.();
       const separator = row.key.lastIndexOf("\0");
       const filePath = row.key.slice(0, separator);
+      if (invalidPaths.has(filePath)) {
+        continue;
+      }
+      if (row.header_bytes === null || row.header_bytes > 64 * 1024) {
+        invalidPaths.add(filePath);
+        budget?.deferredPaths.delete(filePath);
+        byPath.delete(filePath);
+        continue;
+      }
       const bytes = 2 * (row.value_json?.length ?? 0) + (row.blob?.byteLength ?? 0);
-      if (
-        budget &&
-        (row.header_bytes > 64 * 1024 ||
-          (row.body_bytes > 0 && row.blob === null) ||
-          bytes > budget.remainingBytes)
-      ) {
+      if (budget && ((row.body_bytes > 0 && row.blob === null) || bytes > budget.remainingBytes)) {
         budget.deferredPaths.add(filePath);
         byPath.delete(filePath);
         continue;

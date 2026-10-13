@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -253,6 +253,87 @@ describe("sessions.usage", () => {
       }
     },
   );
+
+  it("keeps an identical cold usage request alive when the first client disconnects", async ({
+    signal: testSignal,
+  }) => {
+    const firstStarted = createDeferred<AbortSignal>();
+    const secondStarted = createDeferred<AbortSignal>();
+    const started = [firstStarted, secondStarted];
+    const release = createDeferred();
+    const firstClient = new AbortController();
+    const secondClient = new AbortController();
+    const firstRespond = vi.fn();
+    const secondRespond = vi.fn();
+    const load = vi.mocked(loadSessionCostSummariesFromCache);
+    const originalLoad = expectDefined(load.getMockImplementation(), "usage summary fixture");
+    load.mockImplementation(async ({ sessions }) => {
+      const signal = expectDefined(getAsyncWorkSignal(), "request-owned usage work signal");
+      const aborted = createDeferred<never>();
+      const abort = () => aborted.reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      started.shift()?.resolve(signal);
+      try {
+        await Promise.race([release.promise, aborted.promise]);
+        signal.throwIfAborted();
+        return {
+          summaries: sessions.map(() => ({ ...createEmptyCostUsageTotals(), totalTokens: 123 })),
+          cacheStatus: {
+            status: "fresh",
+            cachedFiles: sessions.length,
+            pendingFiles: 0,
+            staleFiles: 0,
+          },
+        };
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    });
+    const first = runSessionsUsageMethod("sessions.usage", BASE_USAGE_RANGE, {
+      signal: firstClient.signal,
+      respond: firstRespond,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let second: Promise<unknown> | undefined;
+    try {
+      const firstSignal = await withinTest(firstStarted.promise, testSignal);
+      second = runSessionsUsageMethod("sessions.usage", BASE_USAGE_RANGE, {
+        signal: secondClient.signal,
+        respond: secondRespond,
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      firstClient.abort(new Error("first usage client disconnected"));
+      expect(await withinTest(first, testSignal)).toBe(firstSignal.reason);
+      expect(firstSignal.aborted).toBe(true);
+      expect(firstRespond).not.toHaveBeenCalled();
+      const secondSignal = await withinTest(
+        Promise.race([
+          secondStarted.promise,
+          second.then((error) => {
+            expect(
+              error,
+              "connected usage client must not inherit the first disconnect",
+            ).toBeUndefined();
+            throw new Error("The connected usage client completed before releasing its read");
+          }),
+        ]),
+        testSignal,
+      );
+      expect(secondSignal.aborted).toBe(false);
+      expect(secondRespond).not.toHaveBeenCalled();
+      release.resolve();
+      expect(await withinTest(second, testSignal)).toBeUndefined();
+      expect(readResult(secondRespond).totals.totalTokens).toBe(123);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([first, second]);
+      load.mockImplementation(originalLoad);
+    }
+  });
 
   it("filters all overview candidates before pagination and keeps canonical filtered exports complete", async () => {
     const discovered = Array.from({ length: 1001 }, (_, index) => ({
