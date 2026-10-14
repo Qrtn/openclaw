@@ -585,6 +585,7 @@ describe("docker sandbox backend manager", () => {
   it.skipIf(process.platform === "win32").each([
     { engine: "docker", host: "github.com" },
     { engine: "podman", host: "ghe.example.test" },
+    { engine: "docker", host: "tenant.ghe.com" },
   ] as const)(
     "$engine binds the current $host identity at launch without staging its token",
     async ({ engine, host }) => {
@@ -603,8 +604,8 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 process.stdout.write(JSON.stringify({
   args,
-  selected: process.env.GH_TOKEN === "synthetic-after-preparation" && process.env.GH_ENTERPRISE_TOKEN === process.env.GH_TOKEN,
-  cleared: !process.env.GITHUB_TOKEN && !process.env.GITHUB_ENTERPRISE_TOKEN,
+  selected: process.env[${JSON.stringify(host === "ghe.example.test" ? "GH_ENTERPRISE_TOKEN" : "GH_TOKEN")}] === "synthetic-after-preparation",
+  cleared: !process.env.GITHUB_TOKEN && !process.env.GITHUB_ENTERPRISE_TOKEN && !process.env[${JSON.stringify(host === "ghe.example.test" ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN")}],
   staged: fs.readFileSync(args[args.indexOf("--env-file") + 1], "utf8"),
 }));
 `,

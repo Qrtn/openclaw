@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "../infra/runtime-worker-url.js";
-import { resolveConfiguredGitHubHost } from "./github-host.js";
+import { GITHUB_PUBLIC_HOST, resolveConfiguredGitHubHost } from "./github-host.js";
 
 function quotePowerShellLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
@@ -20,6 +20,9 @@ export function buildGitHubExecLaunchArgv(
   const workerUrl = resolveRuntimeProcessEntrypointUrl("githubExec");
   const host = resolveConfiguredGitHubHost({ gateway: { github: { host: options?.githubHost } } });
   const launcher = [process.execPath, ...resolveRuntimeWorkerArgv(workerUrl), profileDir, host];
+  // GH_HOST is a default, not an authentication boundary. Do not expose a public
+  // token through the Enterprise family when a command selects a different host.
+  const publicToken = host === GITHUB_PUBLIC_HOST || host.endsWith(".ghe.com");
   if (process.platform === "win32") {
     const externalShell = options?.externalCommandShell;
     const shellArgv = externalShell
@@ -42,7 +45,10 @@ export function buildGitHubExecLaunchArgv(
       "if (-not $? -or $LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($env:GH_TOKEN)) { exit 1 }",
       "} finally { Pop-Location };",
       `$env:GH_HOST = ${quotePowerShellLiteral(host)};`,
-      "$env:GH_ENTERPRISE_TOKEN = $env:GH_TOKEN; $env:GITHUB_TOKEN = ''; $env:GITHUB_ENTERPRISE_TOKEN = ''; $LASTEXITCODE = $null;",
+      publicToken
+        ? "$env:GH_ENTERPRISE_TOKEN = '';"
+        : "$env:GH_ENTERPRISE_TOKEN = $env:GH_TOKEN; $env:GH_TOKEN = '';",
+      "$env:GITHUB_TOKEN = ''; $env:GITHUB_ENTERPRISE_TOKEN = ''; $LASTEXITCODE = $null;",
       `& ([scriptblock]::Create(${quotePowerShellLiteral(command)}))`,
     ].join(" ");
     return [...shellArgv.slice(0, -1), bootstrap];
@@ -52,6 +58,6 @@ export function buildGitHubExecLaunchArgv(
   // Resolve source-mode tsx beside application code; only the substitution changes cwd.
   const resolverDir = quoteCliArg(fileURLToPath(new URL(".", workerUrl)));
   const enterResolverDir = `cd ${resolverDir} 2>/dev/null || { printf '%s\\n' 'GitHub Identity launcher is unavailable. Restart OpenClaw, then retry.' >&2; exit 1; }`;
-  const bootstrap = `set +x; GH_TOKEN="$(${enterResolverDir}; exec ${launcher.map(quoteCliArg).join(" ")})" || exit $?; GH_HOST=${quoteCliArg(host)}; GH_ENTERPRISE_TOKEN=$GH_TOKEN; GITHUB_TOKEN=; GITHUB_ENTERPRISE_TOKEN=; export GH_HOST GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_TOKEN GITHUB_ENTERPRISE_TOKEN; exec "$@"`;
+  const bootstrap = `set +x; GH_TOKEN="$(${enterResolverDir}; exec ${launcher.map(quoteCliArg).join(" ")})" || exit $?; GH_HOST=${quoteCliArg(host)}; ${publicToken ? "GH_ENTERPRISE_TOKEN=;" : "GH_ENTERPRISE_TOKEN=$GH_TOKEN; GH_TOKEN=;"} GITHUB_TOKEN=; GITHUB_ENTERPRISE_TOKEN=; export GH_HOST GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_TOKEN GITHUB_ENTERPRISE_TOKEN; exec "$@"`;
   return ["/bin/sh", "-c", bootstrap, "openclaw-github-exec", ...argv];
 }
