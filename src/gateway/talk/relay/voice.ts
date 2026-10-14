@@ -21,7 +21,10 @@ import { drainingRelaySessions, type RelaySession } from "./state.js";
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
 
-async function withRelayTranscriptRetries(run: () => Promise<unknown>): Promise<void> {
+async function withRelayTranscriptRetries(
+  run: () => Promise<unknown>,
+  reconcileUnknown = false,
+): Promise<void> {
   let lastError: unknown;
   for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
     if (delayMs > 0) {
@@ -31,7 +34,7 @@ async function withRelayTranscriptRetries(run: () => Promise<unknown>): Promise<
       await run();
       return;
     } catch (error) {
-      if (hasSqliteWorkerOutcomeUnknown(error)) {
+      if (hasSqliteWorkerOutcomeUnknown(error) && !reconcileUnknown) {
         throw error;
       }
       lastError = error;
@@ -218,7 +221,8 @@ export function closeRelayVoiceSession(
         try {
           if (disposition === "detach") {
             for (const append of session.unspokenAnswers?.values() ?? []) {
-              await withRelayTranscriptRetries(() => append(writer));
+              // The stable-key transcript turn reconciles any earlier commit before inserting.
+              await withRelayTranscriptRetries(() => append(writer), true);
             }
           }
         } finally {

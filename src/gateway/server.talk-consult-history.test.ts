@@ -793,16 +793,18 @@ describe("Direct Talk consult history after call closure", () => {
 
 describe("Gateway-relay Talk consult history after call closure", () => {
   it.each([
-    [undefined, false, false, false],
-    ["abort", false, false, false],
-    ["detach", false, false, false],
-    ["detach", true, false, false],
-    ["detach", true, true, false],
-    ["detach", true, false, true],
-    ["detach", true, true, true],
+    [undefined, false, false, false, undefined],
+    ["abort", false, false, false, undefined],
+    ["detach", false, false, false, undefined],
+    ["detach", true, false, false, undefined],
+    ["detach", true, true, false, undefined],
+    ["detach", true, false, true, undefined],
+    ["detach", true, true, true, undefined],
+    ["detach", true, false, false, "before"],
+    ["detach", true, false, false, "after"],
   ] as const)(
-    "settles close disposition %s (after final: %s; spoken transcript: %s; second consult: %s)",
-    async (disposition, afterFinal, spokenReplacement, pendingFollowUp) => {
+    "settles close disposition %s (after final: %s; spoken transcript: %s; second consult: %s; unknown append: %s)",
+    async (disposition, afterFinal, spokenReplacement, pendingFollowUp, unknownAppendOutcome) => {
       const { runTalkRelayCloseHistory } =
         await import("./server.talk-relay-history.test-support.js");
       await runTalkRelayCloseHistory({
@@ -810,6 +812,7 @@ describe("Gateway-relay Talk consult history after call closure", () => {
         afterFinal,
         spokenReplacement,
         pendingFollowUp,
+        unknownAppendOutcome,
         scope,
         sessionKey,
         connectionId,
@@ -819,6 +822,7 @@ describe("Gateway-relay Talk consult history after call closure", () => {
         waitForDispatchEnd,
         drainPublications,
         historyMessages,
+        liveMessages,
         answer,
         args,
       });

@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, type MockInstance } from "vitest";
+import { expect, onTestFinished, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { extractText } from "../../ui/src/lib/chat/message-extract.ts";
 import { buildEmbeddedRunPayloads } from "../agents/embedded-agent-runner/run/payloads.js";
@@ -9,8 +9,11 @@ import { SessionManager } from "../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { loadTranscriptEventsSync } from "../config/sessions/session-accessor.js";
+import * as transcriptTurns from "../config/sessions/session-accessor.sqlite-transcript-turn.js";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { getSessionWorkAdmissionRelease } from "../sessions/session-lifecycle-admission.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../talk/agent-consult-tool.js";
+import * as sleep from "../utils/sleep.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createIdleRelayProvider } from "./talk/relay/index.test-support.js";
 import { closeRelaySession, flushTalkRealtimeRelayVoiceWrites } from "./talk/relay/operations.js";
@@ -25,6 +28,7 @@ export async function runTalkRelayCloseHistory({
   afterFinal,
   spokenReplacement,
   pendingFollowUp,
+  unknownAppendOutcome,
   scope,
   sessionKey,
   connectionId,
@@ -34,6 +38,7 @@ export async function runTalkRelayCloseHistory({
   waitForDispatchEnd,
   drainPublications,
   historyMessages,
+  liveMessages,
   answer,
   args,
 }: {
@@ -41,6 +46,7 @@ export async function runTalkRelayCloseHistory({
   afterFinal: boolean;
   spokenReplacement: boolean;
   pendingFollowUp: boolean;
+  unknownAppendOutcome?: "before" | "after";
   scope: () => { agentId: string; sessionKey: string; sessionId: string; storePath: string };
   sessionKey: string;
   connectionId: string;
@@ -50,6 +56,7 @@ export async function runTalkRelayCloseHistory({
   waitForDispatchEnd: () => Promise<void>;
   drainPublications: () => Promise<void>;
   historyMessages: () => Promise<unknown[]>;
+  liveMessages: () => unknown[];
   answer: string;
   args: Record<string, unknown>;
 }) {
@@ -166,6 +173,22 @@ export async function runTalkRelayCloseHistory({
       });
     }
     const transcriptBeforeClose = loadTranscriptEventsSync(scope());
+    if (unknownAppendOutcome) {
+      const append = transcriptTurns.appendExpectedSessionTranscriptTurn;
+      const injected = vi
+        .spyOn(transcriptTurns, "appendExpectedSessionTranscriptTurn")
+        .mockImplementationOnce(async (...params) => {
+          if (unknownAppendOutcome === "after") {
+            await append(...params);
+          }
+          throw new SqliteWorkerError("Detached answer outcome unknown", "outcome-unknown");
+        });
+      const delay = vi.spyOn(sleep, "sleep").mockResolvedValue();
+      onTestFinished(() => {
+        injected.mockRestore();
+        delay.mockRestore();
+      });
+    }
     await rpc("talk.session.close", {
       sessionId: relay.relaySessionId,
       ...(disposition ? { disposition } : {}),
@@ -198,6 +221,7 @@ export async function runTalkRelayCloseHistory({
       disposition === "detach" ? (afterFinal ? [answer, answer] : [answer]) : [],
     );
     if (disposition === "detach") {
+      expect(liveMessages().map(extractText)).toContain(answer);
       expect(stored.at(-1)?.display).toBeUndefined();
       if (afterFinal) {
         expect(stored[0]?.display).toBe(false);

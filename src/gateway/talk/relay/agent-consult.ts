@@ -181,12 +181,10 @@ export function createRelayAgentRunRegistration(
               throw new Error("Realtime relay answer session changed before append");
             }
             for (const appended of result.appendedMessages) {
-              if (appended.appended) {
-                await publishTranscriptUpdate(target, {
-                  message: appended.message,
-                  messageId: appended.messageId,
-                });
-              }
+              await publishTranscriptUpdate(target, {
+                message: appended.message,
+                messageId: appended.messageId,
+              });
             }
           });
         }
