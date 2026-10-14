@@ -210,8 +210,12 @@ export function renderSidebarPluginNavigationMenu(params: {
         icon:
           action.icon && Object.hasOwn(iconData, action.icon) ? (
             <span class="nav-item__icon" aria-hidden="true">
-              {/* SAFETY: The preceding own-key guard admits only keys of iconData. */}
-              <Icon name={action.icon as IconName} />
+              <Icon
+                name={
+                  // SAFETY: The preceding own-key guard admits only keys of iconData.
+                  action.icon as IconName
+                }
+              />
             </span>
           ) : undefined,
         content: <span class="sidebar-customize-menu__text">{action.label}</span>,

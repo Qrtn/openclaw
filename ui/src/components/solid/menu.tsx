@@ -482,6 +482,13 @@ export function Menu(props: BranchProps): JSX.Element {
         aria-haspopup="menu"
         aria-controls={`${identity.id}:content`}
         aria-expanded={opened() ? "true" : "false"}
+        data-highlighted={
+          identity.binding &&
+          (identity.binding.read().highlightedValue === props.triggerAttributes?.["data-value"] ||
+            identity.binding.read().highlightedValue === identity.triggerId)
+            ? ""
+            : undefined
+        }
         aria-label={props.label}
         disabled={props.disabled}
       >

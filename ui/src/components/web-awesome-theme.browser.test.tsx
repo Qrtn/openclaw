@@ -1,3 +1,4 @@
+import "@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js";
 import "@awesome.me/webawesome/dist/components/option/option.js";
 import "@awesome.me/webawesome/dist/components/select/select.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -161,7 +162,7 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
       (item) => item.variant === "danger",
     )!;
     await prepareControls(host);
-    const currentOption = await focusNextOption(select);
+    const menuTrigger = menu.parentElement!.querySelector<HTMLButtonElement>(".oc-menu-trigger")!;
 
     for (const theme of [
       "dark",
@@ -183,6 +184,11 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
         root.style.setProperty("--popover", "rgb(32, 45, 38)");
         root.style.setProperty("--danger", "rgb(240, 135, 150)");
       }
+      // The select dismisses the native menu. Check each owner while its surface is visible.
+      if (!menu.matches(":popover-open")) {
+        menuTrigger.click();
+      }
+      await expect.poll(() => menu.getAttribute("data-phase")).toBe("open");
       // Finish existing library color transitions; this test checks settled palette inheritance.
       for (const animation of document.getAnimations()) {
         animation.finish();
@@ -191,6 +197,8 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
       expect(controlStyle(help, "submenu indicator").color, theme).toBe(color("muted"));
       expect(controlStyle(settings, "item description").color, theme).toBe(color("muted"));
       expect(controlStyle(menu, "menu").backgroundColor, theme).toBe(color("bg-elevated"));
+      const currentOption = await focusNextOption(select);
+      await expect.poll(() => menu.getAttribute("data-phase")).toBe("hidden");
       expect(controlStyle(select, "options").backgroundColor, theme).toBe(color("popover"));
       expect(controlStyle(select, "select indicator").color, theme).toBe(color("muted"));
       expect(controlStyle(select, "selected value").color, theme).toBe(color("text"));
@@ -204,6 +212,7 @@ describe.runIf("__vitest_browser__" in globalThis)("shared control theme inherit
       }
       expect(getComputedStyle(currentOption).color, theme).toBe(color("text"));
       expect(getComputedStyle(currentOption).backgroundColor, theme).toBe(color("bg-hover"));
+      await select.hide();
     }
   });
 });
