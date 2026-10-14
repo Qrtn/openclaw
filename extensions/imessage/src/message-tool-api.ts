@@ -13,6 +13,11 @@ import {
 import { getCachedIMessageRemoteHost } from "./remote-host.js";
 import { inferIMessageTargetChatType } from "./targets.js";
 
+// imsg edits through whichever IMChat selector the running macOS exposes:
+// editMessageItemTranslation on macOS 26+, editMessageItem on 14-15, and
+// editMessage on 13. Any one of them is enough to apply an edit.
+const IMESSAGE_EDIT_SELECTORS = ["editMessageItemTranslation", "editMessageItem", "editMessage"];
+
 function isGroupTarget(
   raw?: string | null,
   chatType?: "direct" | "group" | "channel" | null,
@@ -57,8 +62,7 @@ export function describeIMessageMessageTool({
     if (
       action === "edit" &&
       privateApiStatus?.selectors &&
-      !privateApiStatus.selectors.editMessage &&
-      !privateApiStatus.selectors.editMessageItem
+      !IMESSAGE_EDIT_SELECTORS.some((selector) => privateApiStatus.selectors[selector])
     ) {
       continue;
     }
