@@ -106,14 +106,14 @@ any binding preference that applies to that turn: Fast on starts from `priority`
 Fast off sends `null`, and auto decides for each model call. The configured or
 bound native tier is used only when no shared run control is supplied.
 
-Ultrafast requires an effective shared `"ultrafast"` selection, from a session or
-run control or an authored `fastModeDefault: "ultrafast"`, and an authenticated
-app-server catalog that advertises it for the selected native model. An unset
-`appServer.enableUltrafast` or `true` permits that selection; `false` sends ordinary
-Fast (`priority`) instead and skips the Ultrafast catalog check. Fast, active Auto,
-and unspecified controls never automatically upgrade. A native `serviceTier:
-"ultrafast"` also starts from `priority` until the shared selection requests it.
-Standard and inactive Auto remain off.
+Ultrafast requires authenticated app-server catalog support for the selected
+native model. With `appServer.enableUltrafast` unset, request it explicitly through
+`fastMode: "ultrafast"`, `/fast ultrafast`, or `fastModeDefault: "ultrafast"`.
+On this October backport, an explicit `appServer.enableUltrafast: true` also
+preserves the September opt-in for Fast, active Auto, and unspecified shared
+controls. Set it to `false` to skip the Ultrafast catalog check and use ordinary
+Fast (`priority`) for an explicit Ultrafast selection. Unsupported models retain
+the baseline tier. Standard and inactive Auto remain off.
 See [app-server transport](/plugins/codex-harness-reference/app-server-transport)
 for catalog checks and fallback behavior.
 
