@@ -498,12 +498,12 @@ export class SidebarMenusController {
   }
 
   restoreFocusAfterAgentMenuHoverOpen() {
-    if (this.agentMenuInteractionState !== "open-hover") {
-      return;
-    }
     this.host
       .querySelector<HTMLElement>(".sidebar-agent-menu__agent-switch--active")
       ?.scrollIntoView?.({ block: "nearest" });
+    if (this.agentMenuInteractionState !== "open-hover") {
+      return;
+    }
     const previous = this.agentMenuFocusBeforeHover;
     this.agentMenuFocusBeforeHover = null;
     if (previous && previous !== document.body && previous.isConnected) {
