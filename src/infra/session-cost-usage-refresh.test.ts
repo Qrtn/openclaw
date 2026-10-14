@@ -430,6 +430,19 @@ describe("session cost usage refresh", () => {
             sessions: [{ sessionFile }],
             requestRefresh: false,
           });
+          let settled = false;
+          void reading.then(
+            () => {
+              settled = true;
+            },
+            () => {
+              settled = true;
+            },
+          );
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 150);
+          });
+          expect(settled).toBe(false);
           releaseFirstBatch.resolve("refreshed");
           const result = await withinTest(reading, signal);
           expect(result.summaries[0]).toMatchObject({
@@ -474,6 +487,7 @@ describe("session cost usage refresh", () => {
             agentId,
             sessions: [{ sessionFile: sessionFiles[0] }],
             requestRefresh: false,
+            maxPublicationWaitMs: 100,
           }),
         );
         // Observe rejection immediately; scope cancellation must not become an
@@ -508,7 +522,6 @@ describe("session cost usage refresh", () => {
           await result;
           await refreshOwner.drain();
           await requestOwner.drain();
-
         }
       });
     },

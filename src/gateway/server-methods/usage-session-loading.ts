@@ -24,6 +24,7 @@ export type UsageSessionSummaryTarget = {
 };
 
 const USAGE_AGENT_LOAD_CONCURRENCY = 12;
+const USAGE_REPORT_PUBLICATION_WAIT_MS = 100;
 
 export async function runUsageAgentTasks<T>(tasks: Array<() => Promise<T>>): Promise<T[]> {
   const result = await runTasksWithConcurrency({
@@ -142,6 +143,7 @@ export async function loadUsageSessionSummaries(params: {
         endMs,
         includeUntimestamped,
         dayBucket,
+        maxPublicationWaitMs: USAGE_REPORT_PUBLICATION_WAIT_MS,
       }),
     })),
   );

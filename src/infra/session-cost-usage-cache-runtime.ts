@@ -31,7 +31,6 @@ import type {
 const USAGE_COST_REFRESH_RETRY_MIN_MS = 50;
 const USAGE_COST_PUBLICATION_QUIET_MS = 30_000;
 const USAGE_COST_PUBLICATION_MAX_WAIT_MS = 5 * 60_000;
-const USAGE_COST_PUBLICATION_WAIT_MS = 100;
 const USAGE_COST_REFRESH_BATCH_SIZE = 50;
 const USAGE_COST_REFRESH_RETRY_MAX_MS = 5_000;
 const logger = createSubsystemLogger("usage-cost-cache");
@@ -75,6 +74,7 @@ function isUsageCostRefreshQueued(databasePath: string): boolean {
 async function flushPendingUsageCostRefresh(
   prepared: PreparedUsageCostWorker,
   sessionFiles?: string[],
+  maxPublicationWaitMs = Infinity,
 ): Promise<void> {
   const signal = getAsyncWorkSignal();
   signal?.throwIfAborted();
@@ -110,15 +110,15 @@ async function flushPendingUsageCostRefresh(
   if (pending.length === 0) {
     return;
   }
-  // Refresh remains owned by its publication scope. Slow batches serve the last
-  // committed projection instead of making the report wait for the entire queue.
+  // Reports can serve the last committed projection after their wait budget;
+  // exact reads keep awaiting their selected sessions. Publication owns the refresh.
   const waiting = new AbortController();
   const stopWaiting = () => waiting.abort();
   signal?.addEventListener("abort", stopWaiting, { once: true });
   try {
     await Promise.race([
       Promise.all(pending),
-      waitForUsageCostRefresh(waiting.signal, USAGE_COST_PUBLICATION_WAIT_MS),
+      waitForUsageCostRefresh(waiting.signal, maxPublicationWaitMs),
     ]);
     signal?.throwIfAborted();
   } finally {
@@ -226,6 +226,7 @@ type SessionCostReadParams = {
   includeUntimestamped?: boolean;
   dayBucket?: UsageDailyBucket;
   requestRefresh?: boolean;
+  maxPublicationWaitMs?: number;
 };
 
 export async function loadSessionCostSummariesFromCache(
@@ -254,6 +255,7 @@ async function loadCapturedSessionCostSummariesFromCache(
   await flushPendingUsageCostRefresh(
     prepared,
     params.sessions.map((session) => session.sessionFile),
+    params.maxPublicationWaitMs,
   );
   const pricingFingerprint = await resolveUsageCostPricingFingerprint(
     prepared.config,
