@@ -366,8 +366,8 @@ test("slow writer failure separates waiting and execution", async () => {
     });
     const scope = { agentId: "main", env: state.env };
     const release = createDeferredCore();
+    const entered = createDeferredCore();
     const releaseSecond = createDeferredCore();
-    const firstStarted = createDeferredCore();
     const order: string[] = [];
     const diagnostics: SqliteSessionReclamationDiagnostics = {};
     const first = owners.run("first", () =>
@@ -375,7 +375,7 @@ test("slow writer failure separates waiting and execution", async () => {
         scope,
         async () => {
           order.push("first:start");
-          firstStarted.resolve();
+          entered.resolve();
           await release.promise;
           Object.assign(diagnostics, {
             kind: "history-eviction",
@@ -389,10 +389,10 @@ test("slow writer failure separates waiting and execution", async () => {
         diagnostics,
       ),
     );
-    let second: Promise<string> | undefined;
+    let second: Promise<never> | undefined;
     let queuedSuccessor: Promise<string> | undefined;
     try {
-      await firstStarted.promise;
+      await entered.promise;
       expect(order).toEqual(["first:start"]);
       clock = 100;
       const failure = new Error("synthetic writer failure");
