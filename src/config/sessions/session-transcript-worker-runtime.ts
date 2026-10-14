@@ -46,6 +46,8 @@ const historyPrewarms = new WeakMap<
 
 function projectionTarget(input: SessionHistoryWorkerPreparedInput) {
   switch (input.kind) {
+    case "history-page":
+      return input.request.kind === "active-accounting" ? input.target.transcript : undefined;
     case "transcript-hydration":
     case "current-turn-entry":
     case "recent-active-events":
@@ -182,18 +184,24 @@ export function retainSessionHistoryWorkerDatabase(
                     options.prepareRead?.();
                     const input = prepare();
                     const projection = projectionTarget(input);
+                    const projectionReceipt = projection?.sessionId
+                      ? readSessionActorProjectionReceipt({
+                          path: database.path,
+                          sessionKey: projection.sessionKey,
+                          sessionId: projection.sessionId,
+                        })
+                      : undefined;
                     owned.nativeSequences.set(requestLane, ++requestLane.nativeSequence);
                     return {
                       ...input,
                       database,
                       validation: validation?.validation,
-                      projectionReceipt: projection?.sessionId
-                        ? readSessionActorProjectionReceipt({
-                            path: database.path,
-                            sessionKey: projection.sessionKey,
-                            sessionId: projection.sessionId,
-                          })
-                        : undefined,
+                      projectionReceipt: projectionReceipt && {
+                        ...projectionReceipt,
+                        ...(input.kind === "history-page" && !projectionReceipt.entrySessionKey
+                          ? { contextOnly: true }
+                          : {}),
+                      },
                     } satisfies SessionTranscriptWorkerRequest;
                   },
                   {

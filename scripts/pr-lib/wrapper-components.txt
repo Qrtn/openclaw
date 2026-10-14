@@ -362,6 +362,7 @@ src/infra/sql-query-compiler.ts
 src/sessions/communication-admission.ts
 src/sessions/communication-policy.ts
 src/config/sessions/session-actor-command.ts
+src/config/sessions/session-actor-context-metadata.ts
 src/config/sessions/session-actor-executor.ts
 src/config/sessions/session-actor-sqlite.ts
 src/config/sessions/session-actor-transaction.ts
@@ -2064,6 +2065,7 @@ src/config/sessions/session-accessor.sqlite-identity.ts
 src/config/sessions/session-accessor.sqlite-worker-coordination.ts
 src/config/sessions/session-accessor.sqlite-worker-transport.ts
 src/config/sessions/session-actor-replica.ts
+src/config/sessions/session-actor-replica-receipts.ts
 src/config/sessions/session-actor-bounded-history.ts
 src/config/sessions/session-actor-transcript-anchors.ts
 src/config/sessions/session-actor-transcript-replica.ts
