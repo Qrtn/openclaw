@@ -108,6 +108,24 @@ it.each([
   },
 );
 
+it("retains the provider notice across unrelated pane publications", () => {
+  const ComposerNotices = renderChatComposerNotices;
+  const providerPolicyNotice = { runId: "run-1", seq: 1, state: "buffering" as const };
+  const [props, publish] = createSignal<Parameters<typeof ComposerNotices>[0]>({
+    messages: [],
+    providerPolicyNotice,
+  });
+  const { container } = mountSolid(() => <ComposerNotices {...props()} />);
+  const notice = container.querySelector(".chat-provider-policy-notice");
+  expect(notice).not.toBeNull();
+  for (const messages of [[], [{ role: "assistant", content: "Updated history" }]]) {
+    publish({ messages, providerPolicyNotice });
+    flush();
+    expect(container.querySelector(".chat-provider-policy-notice")).toBe(notice);
+    expect(notice?.getAttribute("role")).toBe("status");
+  }
+});
+
 it("offers an explicit discard action with the full warning when unsaved starts block recovery", () => {
   const discardAndReload = vi.fn();
   const retry = vi.fn();

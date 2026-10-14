@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { Show } from "solid-js";
+import { createMemo, Show } from "solid-js";
 import type {
   SessionPlacementDiskSpace,
   SessionPlacementWorkerRuntimeInstall,
@@ -207,6 +207,8 @@ export function renderChatTopbarNotices(props: ChatViewNoticesProps) {
 }
 
 export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
+  // Unrelated pane publications must not replace a visible provider notice.
+  const providerPolicyNotice = createMemo(() => props.providerPolicyNotice);
   const hasTranscriptFailure = () =>
     Boolean(
       props.runError?.runId &&
@@ -246,7 +248,7 @@ export function renderChatComposerNotices(props: ChatComposerNoticesProps) {
           />
         )}
       </Show>
-      {renderProviderPolicyNotice(props.providerPolicyNotice)}
+      {renderProviderPolicyNotice(providerPolicyNotice())}
       <Show when={!hasTranscriptFailure() && props.runError}>
         {(error) => (
           <>
