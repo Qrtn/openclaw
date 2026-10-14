@@ -471,6 +471,10 @@ participant records, including contribution counts and recency. The participant 
 updates those records in its existing transaction and publishes them on commit;
 rollback retains the previous facts. Cold, evicted, or invalidated actors use the
 canonical participant read. Participant updates remain independent of metadata CAS.
+Canonical repairs publish merged participant records through this same actor owner
+before projecting the repaired entry, including copies from another store. The next
+participant or membership-facts read sees the committed merge, and a later contribution
+builds on its count. Rolled-back repairs retain the previous participant facts.
 This changes no schema, retention, stored format, or update behavior.
 
 Collaboration writes reuse the captured agent executor without opening a Gateway
@@ -5203,6 +5207,12 @@ larger events need follow-up slice queries. The cursor and follow-up reads retai
 one SQLite snapshot across transport acknowledgments.
 Manual compaction reads entry and transcript statistics after the previous writer
 settles, then reuses them while its lifecycle owner holds admission closed.
+The initial canonical lookup supplies session identity without an unchanged-entry
+write. Terminal accounting uses the entry owner's fixed compaction operation,
+which increments the current writer-owned row without a detached preparation
+snapshot. It preserves intervening metadata and participant updates and refuses
+accounting for a replaced session, lifecycle revision, or writer. Already-completed
+compaction accounting does not repeat work-start eligibility checks.
 Compaction preflight, reset hooks, BTW context, exports, and the asynchronous SDK
 reader retain raw event order, read fences, and byte limits. The host captures the
 physical store before discovery yields and keeps its read custody through cold
