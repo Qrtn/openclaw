@@ -261,6 +261,8 @@ describe("child-process spawn diagnostics", () => {
     ],
     [["-c", "alias.private-command=status", "private-command"], "unscoped.other"],
     [["--unknown-option", "config"], "unscoped.other"],
+    [["--no-lazy-fetch", "version"], "unscoped.version"],
+    [["-C", "/private/repo", "--no-lazy-fetch", "cat-file", "--batch-check"], "unscoped.cat-file"],
   ])("classifies unscoped Git argv %j without exporting its values", (args, operation) => {
     const child = new EventEmitter() as ChildProcess;
     recordChildProcessSpawn("git", child, undefined, args);

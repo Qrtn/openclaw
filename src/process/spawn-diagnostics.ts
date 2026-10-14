@@ -59,7 +59,13 @@ function unscopedGitOperation(args: readonly string[]): string {
     } else if (/^--(?:git-dir|work-tree|namespace|config-env)=/u.test(arg)) {
       i++;
     } else if (
-      ["--no-pager", "--no-optional-locks", "--literal-pathspecs", "--bare"].includes(arg)
+      [
+        "--no-pager",
+        "--no-optional-locks",
+        "--no-lazy-fetch",
+        "--literal-pathspecs",
+        "--bare",
+      ].includes(arg)
     ) {
       i++;
     } else {
@@ -71,7 +77,7 @@ function unscopedGitOperation(args: readonly string[]): string {
     command,
   )
     ? `unscoped.${command}`
-    : command === "--version"
+    : command === "--version" || command === "version"
       ? "unscoped.version"
       : "unscoped.other";
 }
