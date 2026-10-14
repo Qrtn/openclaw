@@ -115,6 +115,42 @@ describe("iMessage message-tool artifact", () => {
     );
   });
 
+  it.each([
+    ["macOS 26+", "editMessageItemTranslation"],
+    ["macOS 14-15", "editMessageItem"],
+    ["macOS 13", "editMessage"],
+  ])("offers edit through the %s edit selector", (_label, selector) => {
+    setCachedIMessagePrivateApiStatus("imsg", {
+      available: true,
+      v2Ready: true,
+      selectors: { [selector]: true },
+      rpcMethods: [],
+    });
+
+    const discovery = describeMessageTool({
+      cfg: { channels: { imessage: { cliPath: "imsg" } } } as never,
+      currentChannelId: "chat_id:1",
+    });
+
+    expect(discovery?.actions).toContain("edit");
+  });
+
+  it("hides edit when imsg reports no edit selector", () => {
+    setCachedIMessagePrivateApiStatus("imsg", {
+      available: true,
+      v2Ready: true,
+      selectors: { editMessageItemTranslation: false, editMessageItem: false, editMessage: false },
+      rpcMethods: [],
+    });
+
+    const discovery = describeMessageTool({
+      cfg: { channels: { imessage: { cliPath: "imsg" } } } as never,
+      currentChannelId: "chat_id:1",
+    });
+
+    expect(discovery?.actions).not.toContain("edit");
+  });
+
   it("offers poll but hides poll-vote on imsg builds without the poll.vote rpc", () => {
     setCachedIMessagePrivateApiStatus("imsg", {
       available: true,
