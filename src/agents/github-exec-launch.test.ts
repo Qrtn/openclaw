@@ -53,9 +53,9 @@ describe.skipIf(!hasPowerShell)("GitHub launch PowerShell boundary", () => {
         target,
         `
         process.stdout.write(JSON.stringify({
-          cwd: process.cwd(), selected: process.env.GH_TOKEN === "synthetic-powershell-token" && process.env.GH_ENTERPRISE_TOKEN === process.env.GH_TOKEN,
+          cwd: process.cwd(), selected: process.env[${JSON.stringify(host === "github.com" ? "GH_TOKEN" : "GH_ENTERPRISE_TOKEN")}] === "synthetic-powershell-token",
           host: process.env.GH_HOST,
-          cleared: !process.env.GITHUB_TOKEN && !process.env.GITHUB_ENTERPRISE_TOKEN,
+          cleared: !process.env.GITHUB_TOKEN && !process.env.GITHUB_ENTERPRISE_TOKEN && !process.env[${JSON.stringify(host === "github.com" ? "GH_ENTERPRISE_TOKEN" : "GH_TOKEN")}],
           args: process.argv.slice(2),
         }));
         process.exitCode = 7;
@@ -157,7 +157,7 @@ describe.skipIf(process.platform === "win32")("GitHub launch source runtimes", (
           process.stdout.write(JSON.stringify({
             args: process.argv.slice(2), cwd: process.cwd(),
             selected: process.env.GH_TOKEN === "synthetic-source-token",
-            cleared: process.env.GITHUB_TOKEN === "",
+            cleared: process.env.GITHUB_TOKEN === "" && !process.env.GH_ENTERPRISE_TOKEN && !process.env.GITHUB_ENTERPRISE_TOKEN,
             lineage: lineage.isSocket() || lineage.isFIFO(),
           }));
         `,
