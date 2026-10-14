@@ -251,12 +251,18 @@ it("refreshes committed metadata and lifecycle marks during a transcript window"
 it.each(["disposal", "replacement"] as const)(
   "cancels a pending trailing transcript refresh on %s",
   async (change) => {
-    await withStreamingProjection(async ({ projection, target, query, append, release }) => {
+    await withStreamingProjection(async ({ projection, target, query, append }) => {
+      const timers = vi.spyOn(globalThis, "setTimeout");
+      const canceled = vi.spyOn(globalThis, "clearTimeout");
+      const published = vi.fn();
+      projection.onFactsChange(published);
       await append("Leading update");
       const before = projection.materializedCount;
       await append("Pending update");
       expect(projection.materializedCount).toBe(before);
-      expect(vi.getTimerCount()).toBe(1);
+      const trailingTimer =
+        timers.mock.results[timers.mock.calls.findIndex(([, delay]) => delay === 1_000)]?.value;
+      expect(trailingTimer).toBeDefined();
       if (change === "disposal") {
         projection.dispose();
       } else {
@@ -269,25 +275,23 @@ it.each(["disposal", "replacement"] as const)(
         await projection.ensureMaterialized();
         expect(projection.snapshot(query).row?.sessionId).toBe("replacement");
       }
-      expect(vi.getTimerCount()).toBe(0);
+      expect(canceled).toHaveBeenCalledWith(trailingTimer);
+      published.mockClear();
       const settled = projection.materializedCount;
       await vi.advanceTimersByTimeAsync(1_000);
       await projection.ensureMaterialized();
+      expect(published).not.toHaveBeenCalled();
       expect(projection.materializedCount).toBe(settled);
       if (change === "disposal") {
         expect(settled).toBe(before);
         expect(projection.selectEntries()).toEqual([]);
       } else {
-        const backfilled = observeSessionRowBackfill([query.key], projection);
         await persistSessionTranscriptTurn(
           { ...target, sessionId: "replacement" },
           { messages: [{ message: { role: "assistant", content: "New session" } }] },
         );
         await projection.ensureMaterialized();
         expect(projection.materializedCount - settled).toBe(0);
-        release();
-        vi.useRealTimers();
-        await backfilled;
         expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
           sessionId: "replacement",
           lastMessagePreview: "New session",
