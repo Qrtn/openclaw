@@ -191,7 +191,32 @@ export function registerCodexFastModeTests({
       supported: true,
       fastMode: true,
       enableUltrafast: true,
+      expected: "ultrafast",
+      catalogRequests: 1,
+    },
+    {
+      name: "Fast off with the Ultrafast switch enabled",
+      supported: true,
+      fastMode: false,
+      enableUltrafast: true,
+      expected: null,
+    },
+    {
+      name: "Fast with an enabled switch but unsupported Ultrafast",
+      supported: false,
+      fastMode: true,
+      enableUltrafast: true,
       expected: "priority",
+      catalogRequests: 1,
+    },
+    {
+      name: "auto activates with the Ultrafast switch enabled",
+      supported: true,
+      fastMode: false,
+      activateAuto: true,
+      enableUltrafast: true,
+      expected: "ultrafast",
+      catalogRequests: 1,
     },
     {
       name: "Fast with the Ultrafast switch disabled",
@@ -238,7 +263,7 @@ export function registerCodexFastModeTests({
       expected: "priority",
     },
   ])(
-    "requires explicit Ultrafast for $name at the actual turn boundary",
+    "preserves October speed compatibility for $name at the actual turn boundary",
     async ({
       supported,
       fastMode,

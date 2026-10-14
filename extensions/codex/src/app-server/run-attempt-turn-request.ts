@@ -205,7 +205,12 @@ export async function prepareCodexAttemptTurnRequest(
       ),
     });
     const serviceTier = await resolveCodexUltrafastServiceTier({
-      enabled: fastMode === "ultrafast" && turnAppServer.enableUltrafast !== false,
+      // Preserve explicitly configured release opt-ins without promoting the
+      // normalized capability default for installations that never opted in.
+      enabled:
+        turnAppServer.enableUltrafast !== false &&
+        (fastMode === "ultrafast" ||
+          (connection.pluginConfig.appServer?.enableUltrafast === true && fastMode !== false)),
       serviceTier: turnStartParams.serviceTier,
       model: turnStartParams.model ?? model,
       modelProvider,
