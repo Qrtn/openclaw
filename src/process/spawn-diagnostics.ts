@@ -56,7 +56,7 @@ function unscopedGitOperation(args: readonly string[]): string {
     const arg = args[i]!;
     if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(arg)) {
       i += 2;
-    } else if (/^--(?:git-dir|work-tree|namespace|config-env)=/u.test(arg)) {
+    } else if (/^--(?:git-dir|work-tree|namespace|config-env|attr-source)=/u.test(arg)) {
       i++;
     } else if (
       [
@@ -73,7 +73,7 @@ function unscopedGitOperation(args: readonly string[]): string {
     }
   }
   const command = args[i] ?? "";
-  return /^(config|rev-parse|status|diff|ls-files|rev-list|merge-base|cat-file|symbolic-ref|for-each-ref|show-ref|remote|log|show|hash-object|update-ref|worktree|branch|fetch|clone|init|checkout|read-tree|write-tree|commit-tree|pack-objects|index-pack|maintenance|multi-pack-index|gc|fast-import|add|commit|push|reset|clean|merge|tag)$/u.test(
+  return /^(config|rev-parse|status|diff|ls-files|rev-list|merge-base|cat-file|symbolic-ref|for-each-ref|show-ref|remote|log|show|hash-object|update-ref|worktree|branch|fetch|clone|init|checkout|read-tree|write-tree|commit-tree|pack-objects|index-pack|maintenance|multi-pack-index|gc|fast-import|add|commit|push|reset|clean|merge|tag|describe|switch|ls-tree|update-index|check-ref-format|diff-tree|diff-index|diff-files|sparse-checkout|checkout-index|check-attr|mktree|var|apply|fsck|ls-remote|rebase|reflog)$/u.test(
     command,
   )
     ? `unscoped.${command}`

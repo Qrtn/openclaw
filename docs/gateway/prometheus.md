@@ -544,7 +544,8 @@ live Workers. Direct Workers contribute to `workerCount` without a pool entry.
 These are JavaScript Worker counts, not an operating-system thread census.
 
 `openclaw_child_process_spawn_total{family="...",operation="..."}` counts successful launches
-through OpenClaw's shared spawn and exec owners, including brokered launches.
+through OpenClaw's shared spawn and exec owners, including brokered launches,
+and the streaming workspace inventory runner.
 Diagnostics must be enabled. The existing heartbeat publishes accumulated
 counts after at least one minute, with debug logs reporting counts and rates
 using the actual elapsed interval. Failed launches, direct calls bypassing
@@ -559,6 +560,8 @@ Git launches carry a bounded owner/operation label: `repository.identities`,
 `github.identity`, `project.checkout`, `update.inspect`, `worktree.config`,
 `worktree.maintenance`, `workspace.sync`, and `workspace.result`. Worker operations retain their admitted
 owner when the parent launches Git, including parallel batches and retries.
+Streaming workspace inventory and pack commands default to `workspace.inventory`
+while preserving an admitted surrounding owner.
 Git launches without an admitted owner use a fixed `unscoped.<command>` label,
 such as `unscoped.config`, `unscoped.rev-parse`, or `unscoped.status`.
 Global Git options and their values are skipped before classifying the command;
