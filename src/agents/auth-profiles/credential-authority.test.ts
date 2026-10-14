@@ -15,11 +15,16 @@ import {
 import { createSqliteCommitReceipt } from "../../infra/sqlite-commit-receipt.js";
 import { deferSqlitePostCommitPublication } from "../../infra/sqlite-post-commit.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
-import { currentSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
+import {
+  currentSqliteWorkerOperationAdmission,
+  type SqliteWorkerOperationContext,
+} from "../../infra/sqlite-worker-operation-settlement.js";
 import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import { saveAuthProfileStore as saveSdkAuthProfileStore } from "../../plugin-sdk/agent-runtime.js";
 import { upsertAuthProfile as upsertSdkAuthProfile } from "../../plugin-sdk/provider-auth.js";
 import { runSqliteImmediateTransactionSync } from "../../plugin-sdk/sqlite-runtime.js";
+import * as machineStateWrites from "../../state/config-machine-state-write.js";
+import { machineStateOperations } from "../../state/config-machine-state.worker.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import {
@@ -34,6 +39,7 @@ import {
   captureAuthProfileCredentialAuthority,
   withAuthProfileCredentialWrite,
 } from "../../state/user-model-account-authority.js";
+import type { WorkerWriteOperationContext } from "../../state/worker-operation-registry.js";
 import { withEnv } from "../../test-utils/env.js";
 import { createExternalAuthRuntime } from "./external-auth.js";
 import { noteCommittedSharedAuthStoreOwnership } from "./path-resolve.js";
@@ -896,6 +902,62 @@ it.each(["commit", "rollback"])(
       transact();
       expect(current.authority.readCurrentCredential()).toEqual(credential("anchored"));
       expect(current.readPersisted()).toEqual(credential("anchored"));
+    }
+  },
+);
+
+it.each(["commit", "rollback"])(
+  "settles machine-state worker credential receipts on the anchor after %s",
+  (outcome) => {
+    const current = fixture("shared-state");
+    const database = openOpenClawStateDatabase({ env: current.env });
+    const connection = createSqlPublicationTestConnection(database.db);
+    const next = store("worker-anchored");
+    const writeInDatabase = machineStateWrites.writeConfigMachineStateInDatabase;
+    // Exercise the real writer on SQLite while the worker receives a distinct engine handle.
+    const writer = vi
+      .spyOn(machineStateWrites, "writeConfigMachineStateInDatabase")
+      .mockImplementation((_db, key, value) => writeInDatabase(database.db, key, value));
+    const write: WorkerWriteOperationContext["write"] = (operation) =>
+      runSqliteImmediateTransactionSync(database.db, () => {
+        const result = operation({ ...database, db: connection });
+        if (outcome === "rollback") {
+          throw new Error("synthetic rollback");
+        }
+        return result;
+      });
+    const { port1, port2 } = new MessageChannel();
+    const owner: SqliteWorkerOperationContext = { port: port1 };
+    try {
+      const transact = () =>
+        currentSqliteWorkerOperationAdmission.run({ active: true, port: port1, owner }, () =>
+          machineStateOperations["machineState.write"](
+            { key: "authProfiles.store", value: next },
+            {
+              open: () => database,
+              stateOptions: () => ({ path: database.path, env: current.env }),
+              write,
+              writeAdmitted: write,
+            },
+          ),
+        );
+      if (outcome === "rollback") {
+        expect(transact).toThrow("synthetic rollback");
+        expect(owner.committed).toBeUndefined();
+        expect(current.authority.readCurrentCredential()).toEqual(credential("original"));
+      } else {
+        transact();
+        expect(owner.committed).toMatchObject({
+          facts: {
+            authCredentials: { facts: new Map([["store", { kind: "postimage", value: next }]]) },
+          },
+        });
+        expect(current.authority.readCurrentCredential()).toEqual(credential("worker-anchored"));
+      }
+    } finally {
+      writer.mockRestore();
+      port1.close();
+      port2.close();
     }
   },
 );
