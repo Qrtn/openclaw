@@ -272,6 +272,15 @@ shutdown, and restart catch-up, and
 [`manager-session-sync-ops.ts`](https://github.com/openclaw/openclaw/blob/main/extensions/memory-core/src/memory/manager-session-sync-ops.ts)
 for scheduling ownership.
 
+Usage rollup refreshes share one queue per database and scope. Session usage reads
+promote only their requested sessions and wait for those refreshes to commit,
+including appends published while a refresh is running. Aggregate cache reads
+flush pending dirty-session publications. Neither waits for unrelated startup or
+repair backfill to finish: exact reads run before the next bounded bulk batch.
+An already-running batch finishes before priority work starts. Background scope
+drain still owns the complete backfill, and a failed or cancelled refresh rejects
+its pending exact reads instead of returning stale totals.
+
 ## Transactions and query shape
 
 Use Kysely for ordinary queries. Raw SQL belongs to schema, migrations,
@@ -462,6 +471,10 @@ participant records, including contribution counts and recency. The participant 
 updates those records in its existing transaction and publishes them on commit;
 rollback retains the previous facts. Cold, evicted, or invalidated actors use the
 canonical participant read. Participant updates remain independent of metadata CAS.
+Canonical repairs publish merged participant records through this same actor owner
+before projecting the repaired entry, including copies from another store. The next
+participant or membership-facts read sees the committed merge, and a later contribution
+builds on its count. Rolled-back repairs retain the previous participant facts.
 This changes no schema, retention, stored format, or update behavior.
 
 Collaboration writes reuse the captured agent executor without opening a Gateway
