@@ -959,7 +959,11 @@ it.each(["missing", "oversized-first", "oversized-last", "identity-length"])(
                 "SELECT key, value_json FROM cache_entries WHERE scope = ? ORDER BY key LIMIT 1",
               )
               .get(USAGE_COST_PARTITION_SCOPE);
-            if (!partition || typeof partition.value_json !== "string") {
+            if (
+              !partition ||
+              typeof partition.key !== "string" ||
+              typeof partition.value_json !== "string"
+            ) {
               throw new Error("Expected partition header");
             }
             db.prepare("UPDATE cache_entries SET value_json = ? WHERE scope = ? AND key = ?").run(

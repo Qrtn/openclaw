@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
 import {
   decodeUsageCostPartition,
@@ -136,7 +137,10 @@ describe("usage rollup storage codec", () => {
     "rejects impossible partition lengths before deferring %i records",
     (records) => {
       const original = entry(records);
-      const partition = partitionUsageCostRollup(original).partitions[0];
+      const partition = expectDefined(
+        partitionUsageCostRollup(original).partitions[0],
+        "Expected generated usage partition",
+      );
       const metadata = JSON.parse(partition.valueJson);
       for (const header of [
         { ...metadata, encoding: "identity", bytes: 35 * 1024 * 1024 },
