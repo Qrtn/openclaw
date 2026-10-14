@@ -10,6 +10,7 @@ import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import type {
   ReclamationDatabaseOptions,
   SessionMaintenanceReadCommand,
+  SqliteSessionReclamationPlan,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import { readSessionMaintenanceInWorker } from "./session-accessor.sqlite-maintenance-transaction.js";
 import { runSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-run.js";
@@ -78,7 +79,7 @@ it.each(["durable", "warm durable", "runtime"] as const)(
         }, options);
       write(protection === "warm durable" ? [0] : [0, 1]);
       const plan = {
-        kind: "maintenance-plan" as const,
+        kind: "maintenance-plan",
         databaseOptions: resolveSessionReclamationDatabaseOptions(options),
         materializedPlans: [],
         input: {
@@ -92,7 +93,7 @@ it.each(["durable", "warm durable", "runtime"] as const)(
           }),
           preservation: null,
         },
-      };
+      } satisfies SqliteSessionReclamationPlan;
       if (protection === "warm durable") {
         await expect(runSqliteSessionReclamation({ plan })).resolves.toMatchObject({
           kind: "maintenance-plan",
