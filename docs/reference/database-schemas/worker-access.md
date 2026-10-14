@@ -1182,7 +1182,8 @@ standing-intent, and Forget commands through that owner. Its published host
 reader is physically read-only and retires with the agent lifecycle.
 Logbook and Workboard already keep native SQL inside their worker backends.
 
-The retained executor and V2 store expose `terminalSignal`. Worker crash, unexpected
+The V2 store exposes `terminalSignal`, backed by the execution owner's terminal
+notification. Worker crash, unexpected
 exit, fatal native failure, or admission revocation aborts it with the failure
 reason after accepted work settles, including unknown write outcomes. A confirmed
 commit remains acknowledged; consumers must not replay a write because the signal

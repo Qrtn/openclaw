@@ -13,6 +13,7 @@ import {
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { notifyListeners } from "../shared/listeners.js";
 import * as creationClaims from "./agent-creation-claim.js";
 import {
   AgentDatabaseExecutionAdmissionClosedError,
@@ -86,8 +87,7 @@ export function createAgentDatabaseExecution(
   const lifetime = new AgentDatabaseExecutionLifetime();
   let borrowers = 0;
   const acceptedWork = createAgentDatabaseAcceptedWork();
-  const terminal = new AbortController();
-  let terminalReason: Error | undefined;
+  const terminalListeners = new Set<(reason: Error) => void>();
   let creationIdentity = expectedCreationIdentity;
   let creationBorrowers = 0;
   let generation: AgentDatabaseNativeGeneration | undefined;
@@ -125,18 +125,16 @@ export function createAgentDatabaseExecution(
     }
   };
   const reportTerminal = (error: unknown) => {
-    if (terminalReason) {
+    if (terminalListeners.size === 0) {
       return;
     }
     const reason = error instanceof Error ? error : new Error(formatErrorMessage(error));
-    terminalReason = reason;
-    lifetime.revoke();
-    acceptedWork.cancelReadAdmissions();
-    clearIdleTimer();
+    const listeners = [...terminalListeners];
+    terminalListeners.clear();
     // Never join this notification from close/run: their accepted work must settle first.
     void Promise.resolve().then(async () => {
       await Promise.allSettled(acceptedWork.pending.keys());
-      terminal.abort(reason);
+      notifyListeners(listeners, reason);
     });
   };
   const finishRetirement = () => {
@@ -249,10 +247,7 @@ export function createAgentDatabaseExecution(
         },
         expectedIdentity ?? fileIdentity,
         acceptFileIdentity,
-        (reason) => {
-          reportTerminal(reason);
-          void owner.close().catch(reportCleanupFailure);
-        },
+        reportTerminal,
         fileIdentity ? undefined : (creationIdentity ?? creatingTarget),
         creationClaim?.witness,
       );
@@ -433,7 +428,10 @@ export function createAgentDatabaseExecution(
       const borrowed: OpenClawAgentDatabaseExecution = {
         agentId,
         path: borrowedPath,
-        terminalSignal: terminal.signal,
+        onTerminal(listener) {
+          terminalListeners.add(listener);
+          return () => terminalListeners.delete(listener);
+        },
         get fileIdentity() {
           assertBorrowed();
           return fileIdentity;
@@ -644,6 +642,9 @@ export function createAgentDatabaseExecution(
     },
   };
   const revoke = () => {
+    lifetime.revoke();
+    acceptedWork.cancelReadAdmissions();
+    clearIdleTimer();
     reportTerminal(
       new AgentDatabaseExecutionAdmissionClosedError("Agent database execution admission revoked"),
     );

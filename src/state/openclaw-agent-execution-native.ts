@@ -108,7 +108,10 @@ export function createAgentDatabaseNativeGeneration(
     if (lease) {
       invalidateOpenClawAgentDatabaseValidation(pathname);
     }
-    onTerminal(reason);
+    // Failed opening admission can be ordinary lock contention; run classifies it after settlement.
+    if (preparationPublished) {
+      onTerminal(reason);
+    }
   };
   const assertCurrent = () => {
     assertLogicalCurrent();

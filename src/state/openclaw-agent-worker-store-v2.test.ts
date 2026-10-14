@@ -195,26 +195,28 @@ it("V2 reports resource revocation only after its accepted write settles", async
   const { db } = openOpenClawAgentDatabase(options);
   db.exec("CREATE TABLE worker_proof (value TEXT NOT NULL)");
   let revoked: Promise<void> | undefined;
-  let terminalAtGrant: boolean | undefined;
-  const worker = await openWorker({
-    onAdmitted(request) {
-      if (request.stage === "commit") {
-        revoked = Promise.all(revokeAgentDatabaseResources(options)).then(() => {});
-        void revoked.catch(() => {});
-        terminalAtGrant = worker.terminalSignal.aborted;
-      }
-    },
-  });
+  let terminalBeforePublication: boolean | undefined;
+  const worker = await openWorker();
   const observed = observeTerminal(worker);
   const committedAtNotification: unknown[] = [];
   worker.terminalSignal.addEventListener("abort", () => {
     committedAtNotification.push(db.prepare("SELECT value FROM worker_proof").all());
   });
-  const accepted = worker.execute({ type: "append", input: { value: "accepted" } }, () => {});
+  const accepted = worker.run(
+    async (scope) => {
+      const result = await scope.execute({ type: "append", input: { value: "accepted" } });
+      // The native COMMIT is acknowledged while the enclosing publication is still pending.
+      revoked = Promise.all(revokeAgentDatabaseResources(options)).then(() => {});
+      void revoked.catch(() => {});
+      terminalBeforePublication = worker.terminalSignal.aborted;
+      return result;
+    },
+    () => {},
+  );
   expect(await withinTest(accepted, signal)).toBeGreaterThan(0);
   await withinTest(observed.terminal, signal);
   await revoked;
-  expect(terminalAtGrant).toBe(false);
+  expect(terminalBeforePublication).toBe(false);
   expect(committedAtNotification).toEqual([[{ value: "accepted" }]]);
   expect(observed.notify).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
   await expect(

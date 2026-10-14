@@ -280,11 +280,7 @@ async function createOpenClawAgentSqliteWorkerStore<Operations extends SqliteWor
       terminal.abort(reason);
     });
   };
-  const executionTerminalListener = terminalExecution
-    ? addAbortListener(terminalExecution.terminalSignal, () =>
-        reportTerminal(terminalExecution.terminalSignal.reason),
-      )
-    : undefined;
+  const stopObservingExecution = terminalExecution?.onTerminal(reportTerminal);
   const releaseDrainExecution = async () => {
     await drainExecution?.release();
     drainExecution = undefined;
@@ -327,7 +323,7 @@ async function createOpenClawAgentSqliteWorkerStore<Operations extends SqliteWor
     cleanupListener[Symbol.dispose]();
     closing ??= (async () => {
       await Promise.allSettled(pending);
-      executionTerminalListener?.[Symbol.dispose]();
+      stopObservingExecution?.();
       await releaseDrainExecution();
       if (ownedAuthority) {
         await capturedExecution?.release();
@@ -369,7 +365,9 @@ async function createOpenClawAgentSqliteWorkerStore<Operations extends SqliteWor
       path: options.path,
       revoke: () => {
         reportTerminal(
-          new AgentDatabaseExecutionAdmissionClosedError("Agent database Worker admission revoked"),
+          new AgentDatabaseExecutionAdmissionClosedError(
+            "Agent database Worker owner is closed: admission revoked",
+          ),
         );
       },
       close,
