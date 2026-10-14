@@ -931,14 +931,16 @@ it.each(["commit", "rollback"])(
     try {
       const transact = () =>
         currentSqliteWorkerOperationAdmission.run({ active: true, port: port1, owner }, () =>
-          machineStateOperations["machineState.write"](
-            { key: "authProfiles.store", value: next },
-            {
-              open: () => database,
-              stateOptions: () => ({ path: database.path, env: current.env }),
-              write,
-              writeAdmitted: write,
-            },
+          runWithSqliteWorkerStateContext(current.context, () =>
+            machineStateOperations["machineState.write"](
+              { key: "authProfiles.store", value: next },
+              {
+                open: () => database,
+                stateOptions: () => ({ path: database.path, env: current.env }),
+                write,
+                writeAdmitted: write,
+              },
+            ),
           ),
         );
       if (outcome === "rollback") {
