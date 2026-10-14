@@ -65,7 +65,11 @@ function setup(pluginConfig: Record<string, unknown>) {
   const lifecycles: Parameters<OpenClawPluginApi["registerRuntimeLifecycle"]>[0][] = [];
   const runContexts = new Map<string, PluginJsonValue>();
   const eventContext = (runId: string): Parameters<AgentEventSubscription["handle"]>[1] => ({
-    getRunContext: (namespace) => api.runContext.getRunContext({ runId, namespace }),
+    // SAFETY: Mirrors the host owner (host-hook-runtime.ts); run-context reads are caller-typed by namespace.
+    getRunContext: ((namespace: string) =>
+      api.runContext.getRunContext({ runId, namespace })) as Parameters<
+      AgentEventSubscription["handle"]
+    >[1]["getRunContext"],
     setRunContext: (namespace, value) => {
       runContexts.set(`${runId}:${namespace}`, value);
     },
